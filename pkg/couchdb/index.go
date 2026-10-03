@@ -14,7 +14,7 @@ import (
 
 // IndexViewsVersion is the version of current definition of views & indexes.
 // This number should be incremented when this file changes.
-const IndexViewsVersion int = 40
+const IndexViewsVersion int = 39
 
 // Indexes is the index list required by an instance to run properly.
 var Indexes = []*mango.Index{
@@ -76,10 +76,6 @@ var Indexes = []*mango.Index{
 	// Used to detect an already in-flight Nextcloud migration when a user
 	// tries to start a new one.
 	mango.MakeIndex(consts.NextcloudMigrations, "by-status", mango.IndexDef{Fields: []string{"status"}}),
-
-	// Used to find the apps whose intent services are hosted on an external
-	// origin, to allow them in the frame-src directive of the CSP
-	mango.MakeIndex(consts.Apps, "by-service-url-flag", mango.IndexDef{Fields: []string{"service_url_flag"}}),
 }
 
 // DiskUsageView is the view used for computing the disk usage for files

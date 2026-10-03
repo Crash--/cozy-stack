@@ -286,20 +286,22 @@ func ExternalServiceURLFromFlags(ins *instance.Instance, slug, flagKey string, f
 }
 
 // ExternalServiceURLs returns the base URLs of the intent services hosted
-// outside the cozy domain, for all the installed apps. Only the apps that
-// declare a "service_url_flag" are fetched, with a mango query.
+// outside the cozy domain, for all the installed apps. Only the slug and the
+// "service_url_flag" of the apps that declare one are fetched, with a mango
+// query. There is no dedicated index: a design doc in the io.cozy.apps
+// database would break the pagination of ListWebappsWithPagination, and this
+// database stays small.
 func ExternalServiceURLs(ins *instance.Instance) ([]*url.URL, error) {
 	var docs []struct {
 		Slug           string      `json:"slug"`
 		ServiceURLFlag interface{} `json:"service_url_flag"`
 	}
 	req := &couchdb.FindRequest{
-		UseIndex: "by-service-url-flag",
 		Selector: mango.Gt("service_url_flag", ""),
 		Fields:   []string{"slug", "service_url_flag"},
 		Limit:    defaultAppListLimit,
 	}
-	if err := couchdb.FindDocs(ins, consts.Apps, req, &docs); err != nil && !couchdb.IsNoDatabaseError(err) {
+	if err := couchdb.FindDocsUnoptimized(ins, consts.Apps, req, &docs); err != nil && !couchdb.IsNoDatabaseError(err) {
 		return nil, err
 	}
 	keys := make(map[string]string)
