@@ -407,6 +407,46 @@ func TestApps(t *testing.T) {
 		csp.NotContains("https://mini.cozywithapps.example.net")
 	})
 
+	t.Run("ServeAddsExternalIntentServicesToFrameSrc", func(t *testing.T) {
+		e := testutils.CreateTestClient(t, ts.URL)
+
+		externalServiceApp := &couchdb.JSONDoc{
+			Type: consts.Apps,
+			M: map[string]interface{}{
+				"_id":              consts.Apps + "/extservice-app",
+				"name":             "ExtServiceApp",
+				"slug":             "extservice-app",
+				"source":           "git://github.com/cozy/extservice.git",
+				"state":            apps.Ready,
+				"service_url_flag": "extservice_url_flag",
+				"routes":           apps.Routes{},
+				"permissions":      permission.Set{},
+				"version":          "1.0.0",
+			},
+		}
+		require.NoError(t, couchdb.CreateNamedDoc(testInstance, externalServiceApp))
+		t.Cleanup(func() { _ = couchdb.DeleteDoc(testInstance, externalServiceApp) })
+
+		// Flag absent: nothing is added
+		csp := e.GET("/foo/").
+			WithHost(slug+"."+testInstance.Domain).
+			WithCookie("cozysessid", cozysessID).
+			Expect().Status(200).
+			Header(echo.HeaderContentSecurityPolicy)
+		csp.NotContains("calendar.external.example.com")
+		csp.NotContains("https://extservice-app.cozywithapps.example.net")
+
+		// Flag set: its origin (not its path) is added to frame-src
+		testutils.WithFlag(t, testInstance, "extservice_url_flag", "https://calendar.external.example.com/app/")
+		csp = e.GET("/foo/").
+			WithHost(slug+"."+testInstance.Domain).
+			WithCookie("cozysessid", cozysessID).
+			Expect().Status(200).
+			Header(echo.HeaderContentSecurityPolicy)
+		csp.Match(`frame-src [^;]*https://calendar\.external\.example\.com[ ;]`)
+		csp.NotContains("https://calendar.external.example.com/app/")
+	})
+
 	t.Run("NoScriptTagBreakoutIntentData", func(t *testing.T) {
 		e := testutils.CreateTestClient(t, ts.URL)
 

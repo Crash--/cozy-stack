@@ -176,6 +176,32 @@ func allowContainerAppsFrame(c echo.Context, i *instance.Instance) {
 	}
 }
 
+// allowExternalIntentServicesFrame adds to frame-src the origin of every
+// installed app whose intent services are hosted outside the cozy domain (via
+// its service_url_flag), so that any app can open their intents in an iframe.
+func allowExternalIntentServicesFrame(c echo.Context, i *instance.Instance) {
+	if config.GetConfig().CSPDisabled {
+		return
+	}
+	manifests, _, err := app.ListWebappsWithPagination(i, 0, "")
+	if err != nil {
+		return
+	}
+	for _, manifest := range manifests {
+		if manifest.ServiceURLFlag() == "" {
+			continue
+		}
+		base, err := url.Parse(app.ResolveServiceURL(i, manifest.Slug()))
+		if err != nil || base.Host == "" {
+			continue
+		}
+		if base.Host == i.SubDomain(manifest.Slug()).Host {
+			continue
+		}
+		middlewares.AppendCSPRule(c, "frame-src", base.Scheme+"://"+base.Host)
+	}
+}
+
 // ServeAppFile will serve the requested file using the specified application
 // manifest and appfs.FileServer context.
 //
@@ -294,6 +320,8 @@ func ServeAppFile(c echo.Context, i *instance.Instance, fs appfs.FileServer, web
 			}
 		}
 	}
+
+	allowExternalIntentServicesFrame(c, i)
 
 	var intentDoc *intent.Intent
 	if intentID := c.QueryParam("intent"); intentID != "" {
