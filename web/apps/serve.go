@@ -187,18 +187,20 @@ func allowExternalIntentServicesFrame(c echo.Context, i *instance.Instance) {
 	if err != nil {
 		return
 	}
+	// The flags are fetched once, and only if an app declares a service_url_flag
+	var flags *feature.Flags
 	for _, manifest := range manifests {
 		if manifest.ServiceURLFlag() == "" {
 			continue
 		}
-		base, err := url.Parse(app.ResolveServiceURL(i, manifest.Slug()))
-		if err != nil || base.Host == "" {
-			continue
+		if flags == nil {
+			if flags, err = feature.GetFlags(i); err != nil {
+				return
+			}
 		}
-		if base.Host == i.SubDomain(manifest.Slug()).Host {
-			continue
+		if base := app.ExternalServiceURLFromFlags(i, manifest, flags); base != nil {
+			middlewares.AppendCSPRule(c, "frame-src", base.Scheme+"://"+base.Host)
 		}
-		middlewares.AppendCSPRule(c, "frame-src", base.Scheme+"://"+base.Host)
 	}
 }
 

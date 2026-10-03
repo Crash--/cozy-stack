@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
@@ -219,15 +220,48 @@ func ResolveClientURL(ins *instance.Instance, slug string) string {
 // not hosted on a cozy subdomain.
 func (m *WebappManifest) ServiceURLFlag() string { return m.val.ServiceURLFlag }
 
-// ResolveServiceURL returns the base URL for the intent services of an app:
-// the value of the feature flag referenced by the app's "service_url_flag"
-// manifest key when present and valid (absolute URL with scheme and host),
-// falling back to the cozy subdomain otherwise.
-func ResolveServiceURL(ins *instance.Instance, slug string) string {
-	return resolveFlagURL(ins, slug, (*WebappManifest).ServiceURLFlag, func(value string) bool {
-		u, err := url.Parse(value)
-		return err == nil && u.Scheme != "" && u.Host != ""
-	})
+// safeServiceHost matches the hosts accepted for an external service URL. It
+// excludes the characters that could break out of a Content-Security-Policy
+// directive (spaces, ';', ',', quotes...).
+var safeServiceHost = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]+)?$`)
+
+// ExternalServiceURL returns the base URL where the intent services of an app
+// are hosted when they are outside the cozy domain: the value of the feature
+// flag referenced by the app's "service_url_flag" manifest key. It returns nil
+// when the app has no such flag, when the value is not an http(s) URL with a
+// safe host, or when its host is the cozy subdomain of the app.
+func ExternalServiceURL(ins *instance.Instance, slug string) *url.URL {
+	manifest, err := GetWebappBySlug(ins, slug)
+	if err != nil || manifest.ServiceURLFlag() == "" {
+		return nil
+	}
+	flags, err := feature.GetFlags(ins)
+	if err != nil {
+		return nil
+	}
+	return ExternalServiceURLFromFlags(ins, manifest, flags)
+}
+
+// ExternalServiceURLFromFlags is the same as ExternalServiceURL, for a
+// manifest and feature flags that are already loaded (e.g. when iterating
+// over the installed apps).
+func ExternalServiceURLFromFlags(ins *instance.Instance, manifest *WebappManifest, flags *feature.Flags) *url.URL {
+	key := manifest.ServiceURLFlag()
+	if key == "" || flags == nil {
+		return nil
+	}
+	value, ok := flags.M[key].(string)
+	if !ok {
+		return nil
+	}
+	u, err := url.Parse(value)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !safeServiceHost.MatchString(u.Host) {
+		return nil
+	}
+	if u.Host == ins.SubDomain(manifest.Slug()).Host {
+		return nil
+	}
+	return u
 }
 
 // resolveFlagURL returns the value of the feature flag whose name is given by

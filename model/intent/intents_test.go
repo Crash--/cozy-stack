@@ -172,6 +172,16 @@ func TestIntents(t *testing.T) {
 		href = intent.GenerateHref(ins, "calendar", "/intents#/open")
 		assert.Equal(t, "https://calendar.cozy.example.net/intents?intent=abc#/open", href)
 
+		// Host with a CSP separator: fallback to the cozy subdomain
+		ins.FeatureFlags = map[string]interface{}{"calendar_service_url": "https://x.example;sandbox"}
+		href = intent.GenerateHref(ins, "calendar", "/intents#/open")
+		assert.Equal(t, "https://calendar.cozy.example.net/intents?intent=abc#/open", href)
+
+		// Scheme other than http(s): fallback to the cozy subdomain
+		ins.FeatureFlags = map[string]interface{}{"calendar_service_url": "javascript://x"}
+		href = intent.GenerateHref(ins, "calendar", "/intents#/open")
+		assert.Equal(t, "https://calendar.cozy.example.net/intents?intent=abc#/open", href)
+
 		// Valid flag value without path
 		ins.FeatureFlags = map[string]interface{}{"calendar_service_url": "https://calendar.external.test"}
 		href = intent.GenerateHref(ins, "calendar", "/intents#/open")

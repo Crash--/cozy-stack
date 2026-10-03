@@ -445,6 +445,16 @@ func TestApps(t *testing.T) {
 			Header(echo.HeaderContentSecurityPolicy)
 		csp.Match(`frame-src [^;]*https://calendar\.external\.example\.com[ ;]`)
 		csp.NotContains("https://calendar.external.example.com/app/")
+
+		// Flag with a CSP separator in its host: nothing is added
+		testutils.WithFlag(t, testInstance, "extservice_url_flag", "https://x.example;sandbox")
+		csp = e.GET("/foo/").
+			WithHost(slug+"."+testInstance.Domain).
+			WithCookie("cozysessid", cozysessID).
+			Expect().Status(200).
+			Header(echo.HeaderContentSecurityPolicy)
+		csp.NotContains("x.example")
+		csp.NotContains("sandbox")
 	})
 
 	t.Run("NoScriptTagBreakoutIntentData", func(t *testing.T) {
