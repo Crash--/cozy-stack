@@ -209,10 +209,26 @@ func (m *WebappManifest) ClientURLFlag() string { return m.val.ClientURLFlag }
 // and valid, falling back to the cozy subdomain otherwise. It is used for
 // postMessage targetOrigin in intents and for CSP frame-ancestors.
 func ResolveClientURL(ins *instance.Instance, slug string) string {
-	return resolveFlagURL(ins, slug, (*WebappManifest).ClientURLFlag, func(value string) bool {
-		_, err := url.ParseRequestURI(value)
-		return err == nil
-	})
+	manifest, err := GetWebappBySlug(ins, slug)
+	if err != nil {
+		return DefaultClientURL(ins, slug)
+	}
+	flagKey := manifest.ClientURLFlag()
+	if flagKey == "" {
+		return DefaultClientURL(ins, slug)
+	}
+	flags, err := feature.GetFlags(ins)
+	if err != nil {
+		return DefaultClientURL(ins, slug)
+	}
+	flagValue, ok := flags.M[flagKey].(string)
+	if !ok {
+		return DefaultClientURL(ins, slug)
+	}
+	if _, err := url.ParseRequestURI(flagValue); err != nil {
+		return DefaultClientURL(ins, slug)
+	}
+	return flagValue
 }
 
 // ServiceURLFlag returns the name of the feature flag whose value is the
@@ -262,34 +278,6 @@ func ExternalServiceURLFromFlags(ins *instance.Instance, manifest *WebappManifes
 		return nil
 	}
 	return u
-}
-
-// resolveFlagURL returns the value of the feature flag whose name is given by
-// flagKey on the manifest of the app, when this value is a string accepted by
-// valid, falling back to the cozy subdomain of the app otherwise.
-func resolveFlagURL(
-	ins *instance.Instance,
-	slug string,
-	flagKey func(*WebappManifest) string,
-	valid func(string) bool,
-) string {
-	manifest, err := GetWebappBySlug(ins, slug)
-	if err != nil {
-		return DefaultClientURL(ins, slug)
-	}
-	key := flagKey(manifest)
-	if key == "" {
-		return DefaultClientURL(ins, slug)
-	}
-	flags, err := feature.GetFlags(ins)
-	if err != nil {
-		return DefaultClientURL(ins, slug)
-	}
-	flagValue, ok := flags.M[key].(string)
-	if !ok || !valid(flagValue) {
-		return DefaultClientURL(ins, slug)
-	}
-	return flagValue
 }
 
 func DefaultClientURL(ins *instance.Instance, slug string) string {
