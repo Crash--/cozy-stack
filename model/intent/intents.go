@@ -84,7 +84,7 @@ func (in *Intent) Save(instance *instance.Instance) error {
 func (in *Intent) GenerateHref(instance *instance.Instance, slug, target string) string {
 	u := instance.SubDomain(slug)
 	prefix := ""
-	if base, err := url.Parse(app.ResolveServiceURL(instance, slug)); err == nil && base.Host != "" {
+	if base, err := url.Parse(app.ResolveServiceURL(instance, slug)); err == nil && base.Host != "" && base.Host != u.Host {
 		u = base
 		prefix = strings.TrimSuffix(base.Path, "/")
 		u.Path = prefix
