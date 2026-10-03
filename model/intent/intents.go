@@ -79,11 +79,21 @@ func (in *Intent) Save(instance *instance.Instance) error {
 }
 
 // GenerateHref creates the href where the service can be called for an intent
+// The base URL is the cozy subdomain of the app, unless the app manifest has a
+// "service_url_flag" whose feature flag value is a valid URL (external host).
 func (in *Intent) GenerateHref(instance *instance.Instance, slug, target string) string {
 	u := instance.SubDomain(slug)
+	prefix := ""
+	if base, err := url.Parse(app.ResolveServiceURL(instance, slug)); err == nil && base.Host != "" {
+		u = base
+		prefix = strings.TrimSuffix(base.Path, "/")
+		u.Path = prefix
+		u.RawQuery = ""
+		u.Fragment = ""
+	}
 	parts := strings.SplitN(target, "#", 2)
 	if len(parts[0]) > 0 {
-		u.Path = parts[0]
+		u.Path = prefix + parts[0]
 	}
 	if len(parts) == 2 && len(parts[1]) > 0 {
 		u.Fragment = parts[1]

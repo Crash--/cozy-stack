@@ -94,11 +94,12 @@ type WebappManifest struct {
 		Err              string    `json:"error"`
 
 		// Just readers
-		Name          string `json:"name"`
-		NamePrefix    string `json:"name_prefix"`
-		Icon          string `json:"icon"`
-		Editor        string `json:"editor"`
-		ClientURLFlag string `json:"client_url_flag"`
+		Name           string `json:"name"`
+		NamePrefix     string `json:"name_prefix"`
+		Icon           string `json:"icon"`
+		Editor         string `json:"editor"`
+		ClientURLFlag  string `json:"client_url_flag"`
+		ServiceURLFlag string `json:"service_url_flag"`
 
 		// Fields with complex types
 		Permissions   permission.Set `json:"permissions"`
@@ -224,6 +225,39 @@ func ResolveClientURL(ins *instance.Instance, slug string) string {
 		return DefaultClientURL(ins, slug)
 	}
 	if _, err := url.ParseRequestURI(flagValue); err != nil {
+		return DefaultClientURL(ins, slug)
+	}
+	return flagValue
+}
+
+// ServiceURLFlag returns the name of the feature flag whose value is the
+// base URL where the intent services of this app are hosted, when the app is
+// not hosted on a cozy subdomain.
+func (m *WebappManifest) ServiceURLFlag() string { return m.val.ServiceURLFlag }
+
+// ResolveServiceURL returns the base URL for the intent services of an app:
+// the value of the feature flag referenced by the app's "service_url_flag"
+// manifest key when present and valid (absolute URL with scheme and host),
+// falling back to the cozy subdomain otherwise.
+func ResolveServiceURL(ins *instance.Instance, slug string) string {
+	manifest, err := GetWebappBySlug(ins, slug)
+	if err != nil {
+		return DefaultClientURL(ins, slug)
+	}
+	flagKey := manifest.ServiceURLFlag()
+	if flagKey == "" {
+		return DefaultClientURL(ins, slug)
+	}
+	flags, err := feature.GetFlags(ins)
+	if err != nil {
+		return DefaultClientURL(ins, slug)
+	}
+	flagValue, ok := flags.M[flagKey].(string)
+	if !ok {
+		return DefaultClientURL(ins, slug)
+	}
+	u, err := url.Parse(flagValue)
+	if err != nil || u.Scheme == "" || u.Host == "" {
 		return DefaultClientURL(ins, slug)
 	}
 	return flagValue

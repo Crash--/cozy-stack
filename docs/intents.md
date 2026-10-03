@@ -228,6 +228,14 @@ The stack then stores the information for that intent:
 Finally, the service URL is suffixed with `?intent=` followed by the intent's
 id, and then sent to the client.
 
+By default, the service URL is on the cozy subdomain of the service app. An
+app whose intent services are hosted on another origin declares a
+`service_url_flag` in its manifest: the value of this feature flag (an
+absolute URL, optionally with a path prefix) replaces the cozy subdomain as
+the base of the service URL. The `href` of the intent is appended to it. The
+external service authenticates with an OAuth token of a client linked to the
+app (`software_id` `registry://<slug>`).
+
 ### 4. Available apps
 
 In addition to the services that manage intents, a list of available (but not
