@@ -505,6 +505,30 @@ func TestIntents(t *testing.T) {
 			ValueEqual("client", "https://app.cozy.example.net")
 	})
 
+	t.Run("GetIntentWithOAuthClientLinkedToAnotherAppIsForbidden", func(t *testing.T) {
+		e := testutils.CreateTestClient(t, ts.URL)
+		calIntentID := createOpenCalendarIntent(t, e, appToken)
+
+		// An OAuth client linked to "drive", which does not serve the intent
+		oauthClient := &oauth.Client{
+			ClientName:   "test-other-linked-app",
+			RedirectURIs: []string{"https://drive.external.test/callback"},
+			SoftwareID:   "registry://drive",
+		}
+		require.Nil(t, oauthClient.Create(ins, oauth.SoftwareIDPrevalidated))
+		tok, err := ins.MakeJWT(consts.AccessTokenAudience,
+			oauthClient.ClientID, oauth.BuildLinkedAppScope("drive"), "", time.Now())
+		require.NoError(t, err)
+
+		// The token is valid: it can be used to create an intent
+		createOpenCalendarIntent(t, e, tok)
+
+		e.GET("/intents/"+calIntentID).
+			WithHeader("Authorization", "Bearer "+tok).
+			WithHeader("Accept", "application/vnd.api+json").
+			Expect().Status(403)
+	})
+
 	t.Run("GetIntentWithOAuthUnlinkedClientIsForbidden", func(t *testing.T) {
 		e := testutils.CreateTestClient(t, ts.URL)
 		calIntentID := createOpenCalendarIntent(t, e, appToken)
