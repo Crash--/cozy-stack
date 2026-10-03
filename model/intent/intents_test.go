@@ -197,6 +197,10 @@ func TestIntents(t *testing.T) {
 		href = intent.GenerateHref(ins, "calendar", "/intents#/open")
 		assert.Equal(t, "https://calendar.external.test/app/intents?intent=abc#/open", href)
 
+		// Path prefix and a target without leading slash
+		href = intent.GenerateHref(ins, "calendar", "intents#/open")
+		assert.Equal(t, "https://calendar.external.test/app/intents?intent=abc#/open", href)
+
 		// FillServices uses the external URL too
 		in := &Intent{IID: "abc", Action: "OPEN", Type: "io.cozy.calendar.events"}
 		require.NoError(t, in.FillServices(ins))

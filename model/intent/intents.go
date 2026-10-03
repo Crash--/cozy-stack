@@ -93,7 +93,11 @@ func (in *Intent) GenerateHref(instance *instance.Instance, slug, target string)
 	}
 	parts := strings.SplitN(target, "#", 2)
 	if len(parts[0]) > 0 {
-		u.Path = prefix + parts[0]
+		p := parts[0]
+		if prefix != "" && !strings.HasPrefix(p, "/") {
+			p = "/" + p
+		}
+		u.Path = prefix + p
 	}
 	if len(parts) == 2 && len(parts[1]) > 0 {
 		u.Fragment = parts[1]
