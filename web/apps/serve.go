@@ -183,24 +183,12 @@ func allowExternalIntentServicesFrame(c echo.Context, i *instance.Instance) {
 	if config.GetConfig().CSPDisabled {
 		return
 	}
-	manifests, _, err := app.ListWebappsWithPagination(i, 0, "")
+	bases, err := app.ExternalServiceURLs(i)
 	if err != nil {
 		return
 	}
-	// The flags are fetched once, and only if an app declares a service_url_flag
-	var flags *feature.Flags
-	for _, manifest := range manifests {
-		if manifest.ServiceURLFlag() == "" {
-			continue
-		}
-		if flags == nil {
-			if flags, err = feature.GetFlags(i); err != nil {
-				return
-			}
-		}
-		if base := app.ExternalServiceURLFromFlags(i, manifest, flags); base != nil {
-			middlewares.AppendCSPRule(c, "frame-src", base.Scheme+"://"+base.Host)
-		}
+	for _, base := range bases {
+		middlewares.AppendCSPRule(c, "frame-src", base.Scheme+"://"+base.Host)
 	}
 }
 

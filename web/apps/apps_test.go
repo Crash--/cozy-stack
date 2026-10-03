@@ -407,6 +407,20 @@ func TestApps(t *testing.T) {
 		csp.NotContains("https://mini.cozywithapps.example.net")
 	})
 
+	t.Run("ServeAddsNoExternalIntentServiceWithoutServiceURLFlag", func(t *testing.T) {
+		e := testutils.CreateTestClient(t, ts.URL)
+
+		// The flag has a valid value, but no app declares it as its
+		// service_url_flag: nothing is added to frame-src
+		testutils.WithFlag(t, testInstance, "extservice_url_flag", "https://calendar.external.example.com/app/")
+		csp := e.GET("/foo/").
+			WithHost(slug+"."+testInstance.Domain).
+			WithCookie("cozysessid", cozysessID).
+			Expect().Status(200).
+			Header(echo.HeaderContentSecurityPolicy)
+		csp.NotContains("calendar.external.example.com")
+	})
+
 	t.Run("ServeAddsExternalIntentServicesToFrameSrc", func(t *testing.T) {
 		e := testutils.CreateTestClient(t, ts.URL)
 

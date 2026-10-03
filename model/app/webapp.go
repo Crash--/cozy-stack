@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/cozy/cozy-stack/pkg/appfs"
 	"github.com/cozy/cozy-stack/pkg/consts"
 	"github.com/cozy/cozy-stack/pkg/couchdb"
+	"github.com/cozy/cozy-stack/pkg/couchdb/mango"
 	"github.com/cozy/cozy-stack/pkg/metadata"
 	"github.com/cozy/cozy-stack/pkg/prefixer"
 	"github.com/spf13/afero"
@@ -256,18 +258,17 @@ func ExternalServiceURL(ins *instance.Instance, slug string) *url.URL {
 	if err != nil {
 		return nil
 	}
-	return ExternalServiceURLFromFlags(ins, manifest, flags)
+	return ExternalServiceURLFromFlags(ins, manifest.Slug(), manifest.ServiceURLFlag(), flags)
 }
 
-// ExternalServiceURLFromFlags is the same as ExternalServiceURL, for a
-// manifest and feature flags that are already loaded (e.g. when iterating
-// over the installed apps).
-func ExternalServiceURLFromFlags(ins *instance.Instance, manifest *WebappManifest, flags *feature.Flags) *url.URL {
-	key := manifest.ServiceURLFlag()
-	if key == "" || flags == nil {
+// ExternalServiceURLFromFlags is the same as ExternalServiceURL, for the slug
+// of an app, the name of its service_url_flag and feature flags that are
+// already loaded.
+func ExternalServiceURLFromFlags(ins *instance.Instance, slug, flagKey string, flags *feature.Flags) *url.URL {
+	if flagKey == "" || flags == nil {
 		return nil
 	}
-	value, ok := flags.M[key].(string)
+	value, ok := flags.M[flagKey].(string)
 	if !ok {
 		return nil
 	}
@@ -278,10 +279,61 @@ func ExternalServiceURLFromFlags(ins *instance.Instance, manifest *WebappManifes
 	if u.User != nil {
 		return nil
 	}
-	if u.Host == ins.SubDomain(manifest.Slug()).Host {
+	if u.Host == ins.SubDomain(slug).Host {
 		return nil
 	}
 	return u
+}
+
+// ExternalServiceURLs returns the base URLs of the intent services hosted
+// outside the cozy domain, for all the installed apps. Only the apps that
+// declare a "service_url_flag" are fetched, with a mango query.
+func ExternalServiceURLs(ins *instance.Instance) ([]*url.URL, error) {
+	var docs []struct {
+		Slug           string      `json:"slug"`
+		ServiceURLFlag interface{} `json:"service_url_flag"`
+	}
+	req := &couchdb.FindRequest{
+		UseIndex: "by-service-url-flag",
+		Selector: mango.Gt("service_url_flag", ""),
+		Fields:   []string{"slug", "service_url_flag"},
+		Limit:    defaultAppListLimit,
+	}
+	if err := couchdb.FindDocs(ins, consts.Apps, req, &docs); err != nil && !couchdb.IsNoDatabaseError(err) {
+		return nil, err
+	}
+	keys := make(map[string]string)
+	for _, doc := range docs {
+		if key, ok := doc.ServiceURLFlag.(string); ok && key != "" {
+			keys[doc.Slug] = key
+		}
+	}
+	// The apps loaded from a directory (development) take precedence
+	for slug := range appsdir {
+		delete(keys, slug)
+		if man, err := loadManifestFromDir(slug); err == nil && man.ServiceURLFlag() != "" {
+			keys[slug] = man.ServiceURLFlag()
+		}
+	}
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	flags, err := feature.GetFlags(ins)
+	if err != nil {
+		return nil, err
+	}
+	slugs := make([]string, 0, len(keys))
+	for slug := range keys {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	var urls []*url.URL
+	for _, slug := range slugs {
+		if u := ExternalServiceURLFromFlags(ins, slug, keys[slug], flags); u != nil {
+			urls = append(urls, u)
+		}
+	}
+	return urls, nil
 }
 
 func DefaultClientURL(ins *instance.Instance, slug string) string {
