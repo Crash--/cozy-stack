@@ -245,7 +245,8 @@ var safeServiceHost = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]+)?$`)
 // are hosted when they are outside the cozy domain: the value of the feature
 // flag referenced by the app's "service_url_flag" manifest key. It returns nil
 // when the app has no such flag, when the value is not an http(s) URL with a
-// safe host, or when its host is the cozy subdomain of the app.
+// safe host and no userinfo, or when its host is the cozy subdomain of the
+// app.
 func ExternalServiceURL(ins *instance.Instance, slug string) *url.URL {
 	manifest, err := GetWebappBySlug(ins, slug)
 	if err != nil || manifest.ServiceURLFlag() == "" {
@@ -272,6 +273,9 @@ func ExternalServiceURLFromFlags(ins *instance.Instance, manifest *WebappManifes
 	}
 	u, err := url.Parse(value)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || !safeServiceHost.MatchString(u.Host) {
+		return nil
+	}
+	if u.User != nil {
 		return nil
 	}
 	if u.Host == ins.SubDomain(manifest.Slug()).Host {

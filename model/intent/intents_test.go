@@ -182,6 +182,11 @@ func TestIntents(t *testing.T) {
 		href = intent.GenerateHref(ins, "calendar", "/intents#/open")
 		assert.Equal(t, "https://calendar.cozy.example.net/intents?intent=abc#/open", href)
 
+		// URL with userinfo: fallback to the cozy subdomain
+		ins.FeatureFlags = map[string]interface{}{"calendar_service_url": "https://u:p@calendar.external.test/"}
+		href = intent.GenerateHref(ins, "calendar", "/intents#/open")
+		assert.Equal(t, "https://calendar.cozy.example.net/intents?intent=abc#/open", href)
+
 		// Valid flag value without path
 		ins.FeatureFlags = map[string]interface{}{"calendar_service_url": "https://calendar.external.test"}
 		href = intent.GenerateHref(ins, "calendar", "/intents#/open")
