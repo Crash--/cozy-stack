@@ -522,6 +522,34 @@ func TestIntents(t *testing.T) {
 			WithHeader("Accept", "application/vnd.api+json").
 			Expect().Status(403)
 	})
+
+	t.Run("CreateIntentWithForcedSessionCodeSkipsExternalService", func(t *testing.T) {
+		ins.FeatureFlags = map[string]interface{}{"calendar_service_url": "https://calendar.external.test"}
+		t.Cleanup(func() { ins.FeatureFlags = nil })
+		e := testutils.CreateTestClient(t, ts.URL)
+
+		tok := createEligibleSessionCodeToken(t, "test-forced-session-external-service")
+		obj := e.POST("/intents").
+			WithQuery("force_session_id", "true").
+			WithHeader("Authorization", "Bearer "+tok).
+			WithHeader("Content-Type", "application/vnd.api+json").
+			WithHeader("Accept", "application/vnd.api+json").
+			WithBytes([]byte(openCalendarIntentPayload)).
+			Expect().Status(200).
+			JSON(httpexpect.ContentOpts{MediaType: "application/vnd.api+json"}).
+			Object()
+
+		extURL, err := url.Parse(serviceHrefBySlug(t, obj, "calendar"))
+		require.NoError(t, err)
+		require.Equal(t, "calendar.external.test", extURL.Host)
+		require.Empty(t, extURL.Query().Get("session_code"))
+		require.NotEmpty(t, extURL.Query().Get("intent"))
+
+		intURL, err := url.Parse(serviceHrefBySlug(t, obj, "internalcal"))
+		require.NoError(t, err)
+		require.Equal(t, "internalcal.cozy.example.net", intURL.Host)
+		require.NotEmpty(t, intURL.Query().Get("session_code"))
+	})
 }
 
 const openCalendarIntentPayload = `{
@@ -547,6 +575,20 @@ func createOpenCalendarIntent(t *testing.T, e *httpexpect.Expect, token string) 
 		JSON(httpexpect.ContentOpts{MediaType: "application/vnd.api+json"}).
 		Object()
 	return obj.Value("data").Object().Value("id").String().NotEmpty().Raw()
+}
+
+func serviceHrefBySlug(t *testing.T, obj *httpexpect.Object, slug string) string {
+	t.Helper()
+
+	services := obj.Value("data").Object().Value("attributes").Object().Value("services").Array()
+	for _, s := range services.Iter() {
+		o := s.Object()
+		if o.Value("slug").String().Raw() == slug {
+			return o.Value("href").String().NotEmpty().Raw()
+		}
+	}
+	t.Fatalf("no service for slug %s", slug)
+	return ""
 }
 
 const pickIntentPayload = `{
