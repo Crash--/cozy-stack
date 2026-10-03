@@ -232,9 +232,14 @@ By default, the service URL is on the cozy subdomain of the service app. An
 app whose intent services are hosted on another origin declares a
 `service_url_flag` in its manifest: the value of this feature flag (an
 absolute URL, optionally with a path prefix) replaces the cozy subdomain as
-the base of the service URL. The `href` of the intent is appended to it. The
+the base of the service URL. The `href` of the intent is appended to it. Only
+`http` and `https` URLs with an ASCII host (letters, digits, dots and dashes,
+with an optional port) and no userinfo are accepted; a query or a fragment in
+the flag value is dropped; and a flag value whose host is the cozy subdomain
+of the app is ignored. In all these cases, the cozy subdomain is used. The
 external service authenticates with an OAuth token of a client linked to the
 app (`software_id` `registry://<slug>`).
+
 The stack adds the origin of such external services to the `frame-src`
 directive of the Content Security Policy of every app, so that any client app
 can open them. The external host must itself allow the client apps in its
@@ -411,7 +416,10 @@ Content-Type: application/vnd.api+json
 
 Get all the informations about the intent
 
-**Note**: only the service can access this route (no permission involved).
+**Note**: only the service can access this route: the request must be
+authenticated as one of the apps listed in the `services` of the intent,
+either with a token of the app itself or with an OAuth token of a client
+linked to the app (`software_id` `registry://<slug>`).
 
 #### Request
 
@@ -507,6 +515,10 @@ Mobile app                cozy-stack                WebView (service app)
 4. **Open WebView** — load `https://<serviceSlug>.<instance>/...?intent=<id>&session_code=<code>`.
    The stack consumes the code, creates a session cookie, and redirects (code
    stripped). The WebView now has a full user session for the instance domain.
+
+When the intent is created with `force_session_id=true`, the services hosted
+on an external origin (see `service_url_flag`) do not receive a
+`session_code` in their href; they must authenticate on their own.
 
 ### Security
 
