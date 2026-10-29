@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -23,6 +24,15 @@ import (
 // SetTrustedPrivateNetworks. Stored as an atomic.Value to avoid data races
 // between config/test setup and concurrent outbound requests.
 var trustedPrivateNetworks atomic.Value // holds []*net.IPNet
+
+var nat64Prefix = netip.MustParsePrefix("64:ff9b::/96")
+
+// These transition mechanisms cannot be checked as ordinary destination IPs.
+var unsupportedTransitionPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("64:ff9b:1::/48"), // Network-specific NAT64 layouts
+	netip.MustParsePrefix("2002::/16"),      // 6to4
+	netip.MustParsePrefix("2001::/32"),      // Teredo
+}
 
 // SetTrustedPrivateNetworks parses the given CIDR strings and stores them for
 // use by safeControl. It should be called once at startup. If any CIDR is
@@ -106,6 +116,17 @@ func safeControl(network string, address string, conn syscall.RawConn) error {
 	ipaddress := net.ParseIP(host)
 	if ipaddress == nil {
 		return fmt.Errorf("%s is not a valid IP address", host)
+	}
+
+	ipv6, _ := netip.AddrFromSlice(ipaddress)
+	for _, prefix := range unsupportedTransitionPrefixes {
+		if prefix.Contains(ipv6) {
+			return fmt.Errorf("%s is not a safe transition IP address", host)
+		}
+	}
+	if nat64Prefix.Contains(ipv6) {
+		// Apply the same policy to the IPv4 destination behind NAT64.
+		ipaddress = ipaddress[12:]
 	}
 
 	if ipaddress.IsUnspecified() || ipaddress.IsLinkLocalUnicast() || ipaddress.IsLinkLocalMulticast() {

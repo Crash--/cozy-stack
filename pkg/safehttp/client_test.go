@@ -63,6 +63,25 @@ func resetTrustedNetworks() {
 	_ = SetTrustedPrivateNetworks(nil)
 }
 
+func TestSafeControlTransitionAddresses(t *testing.T) {
+	build.BuildMode = build.ModeProd
+	t.Cleanup(resetTrustedNetworks)
+	require.NoError(t, SetTrustedPrivateNetworks([]string{"::/0"}))
+	for _, host := range []string{
+		"64:ff9b::a9fe:a9fe", "64:ff9b::7f00:1", "64:ff9b::a00:1",
+		"64:ff9b:1::a9fe:a9fe", "64:ff9b:1:1234::1",
+		"2002:c0a8:101::1", "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+	} {
+		t.Run(host, func(t *testing.T) {
+			assert.Error(t, safeControl("tcp6", "["+host+"]:80", nil))
+		})
+	}
+	for _, host := range []string{"2606:4700:4700::1111", "2001:4860:4860::8888", "64:ff9b:2::1", "64:ff9b::808:808"} {
+		assert.NoError(t, safeControl("tcp6", "["+host+"]:443", nil), host)
+	}
+	assert.Error(t, safeControl("tcp6", "[64:ff9b::808:808]:8080", nil))
+}
+
 func TestSafeControl(t *testing.T) {
 	build.BuildMode = build.ModeProd
 	t.Cleanup(resetTrustedNetworks)
