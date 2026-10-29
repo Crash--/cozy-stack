@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"path/filepath"
 	"time"
 
 	"github.com/cozy/cozy-stack/model/job"
@@ -51,6 +52,9 @@ func unzip(fs vfs.VFS, zipID, destination string) error {
 	dirs := make(map[string]*vfs.DirDoc)
 	for _, f := range r.File {
 		f.Name = utils.CleanUTF8(f.Name)
+		if !filepath.IsLocal(f.Name) {
+			return fmt.Errorf("archive entry %q is outside the destination", f.Name)
+		}
 		name := path.Base(f.Name)
 		dirname := path.Dir(f.Name)
 		dir := dstDoc

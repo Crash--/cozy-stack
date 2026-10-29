@@ -1,8 +1,12 @@
 package archive
 
 import (
+	"archive/zip"
+	"bytes"
+	"fmt"
 	"io"
 	"os"
+	"path"
 	"testing"
 	"time"
 
@@ -11,6 +15,7 @@ import (
 	"github.com/cozy/cozy-stack/pkg/consts"
 	"github.com/cozy/cozy-stack/tests/testutils"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func Test_archive(t *testing.T) {
@@ -22,6 +27,68 @@ func Test_archive(t *testing.T) {
 	setup := testutils.NewSetup(t, t.Name())
 
 	inst := setup.GetTestInstance()
+
+	t.Run("entry paths", func(t *testing.T) {
+		fs := inst.VFS()
+		dst, err := vfs.Mkdir(fs, "/path-check", nil)
+		require.NoError(t, err)
+		for i, tc := range []struct {
+			name  string
+			root  bool
+			valid bool
+		}{
+			{"../escaped.txt", false, false},
+			{"nested/../../escaped-nested.txt", false, false},
+			{"../../escaped-dir/file.txt", false, false},
+			{"/absolute/file.txt", false, false},
+			{"../escaped-root.txt", true, false},
+			{"nested/file.txt", false, true},
+			{"./dot.txt", false, true},
+			{"nested/../clean.txt", false, true},
+			{"root.txt", true, true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				var buf bytes.Buffer
+				writer := zip.NewWriter(&buf)
+				entry, err := writer.Create(tc.name)
+				require.NoError(t, err)
+				_, err = io.WriteString(entry, "contents")
+				require.NoError(t, err)
+				require.NoError(t, writer.Close())
+				doc, err := vfs.NewFileDoc(fmt.Sprintf("paths-%d.zip", i), consts.RootDirID, -1, nil,
+					"application/zip", "application", time.Now(), false, false, false, nil)
+				require.NoError(t, err)
+				file, err := fs.CreateFile(doc, nil)
+				require.NoError(t, err)
+				_, err = io.Copy(file, &buf)
+				require.NoError(t, err)
+				require.NoError(t, file.Close())
+				destination := dst.ID()
+				if tc.root {
+					destination = consts.RootDirID
+				}
+				err = unzip(fs, doc.ID(), destination)
+				if tc.valid {
+					require.NoError(t, err)
+					base := dst.Fullpath
+					if tc.root {
+						base = "/"
+					}
+					extracted, err := fs.FileByPath(path.Join(base, tc.name))
+					require.NoError(t, err)
+					assert.Equal(t, int64(len("contents")), extracted.ByteSize)
+				} else {
+					require.Error(t, err)
+				}
+			})
+		}
+		for _, name := range []string{"/escaped.txt", "/escaped-nested.txt", "/escaped-dir", "/escaped-root.txt", "/path-check/absolute"} {
+			_, err := fs.FileByPath(name)
+			assert.Error(t, err, name)
+			_, err = fs.DirByPath(name)
+			assert.Error(t, err, name)
+		}
+	})
 
 	t.Run("test unzip", func(t *testing.T) {
 		fs := inst.VFS()
