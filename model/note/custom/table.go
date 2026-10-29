@@ -71,7 +71,12 @@ func (b *tableParser) Open(parent ast.Node, reader text.Reader, pc parser.Contex
 	}
 	reader.Advance(count)
 	node := NewTable()
-	if attrs, ok := parser.ParseAttributes(reader); ok {
+	// Malformed attributes must not advance the document reader across lines.
+	line, _ = reader.PeekLine()
+	attributesReader := text.NewReader(line)
+	if attrs, ok := parser.ParseAttributes(attributesReader); ok {
+		_, position := attributesReader.Position()
+		reader.Advance(position.Start)
 		for _, attr := range attrs {
 			if value, ok := attr.Value.([]byte); ok {
 				node.SetAttribute(attr.Name, string(value))
