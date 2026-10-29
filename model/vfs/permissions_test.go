@@ -282,6 +282,15 @@ func TestPermissions(t *testing.T) {
 			assert.NoError(t, vfs.Allows(fs, psetTwoSelectors, permission.GET, f))
 			root, err := fs.DirByID(consts.RootDirID)
 			require.NoError(t, err)
+			psetEmptyID := permission.Set{byID(get, "")}
+			assert.Error(t, vfs.Allows(fs, psetEmptyID, permission.GET, root))
+			assert.ErrorIs(t, vfs.AllowsRule(fs, psetEmptyID, byID(get, consts.RootDirID)), permission.ErrNotSubset)
+			psetEmptyID[0].Values = append(psetEmptyID[0].Values, f.ID())
+			assert.NoError(t, vfs.Allows(fs, psetEmptyID, permission.GET, f))
+			assert.NoError(t, vfs.AllowsRule(fs, psetEmptyID, byID(get, f.ID())))
+			assert.Error(t, vfs.Allows(fs, psetEmptyID, permission.GET, root))
+			assert.ErrorIs(t, vfs.AllowsRule(fs, psetEmptyID, byID(get, consts.RootDirID)), permission.ErrNotSubset)
+
 			assert.Error(t, vfs.Allows(fs, psetTwoSelectors, permission.GET, root))
 			assert.ErrorIs(t, vfs.AllowsRule(fs, psetTwoSelectors, byID(get, consts.RootDirID)), permission.ErrNotSubset)
 			rootFile, err := fs.FileByPath("/root.txt")

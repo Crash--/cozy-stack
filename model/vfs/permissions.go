@@ -46,6 +46,10 @@ func Allows(fs VFS, pset permission.Set, v permission.Verb, fd Fetcher) error {
 		// permission by ID directly on self, parent or root
 		if r.Selector == "" {
 			for _, v := range r.Values {
+				// The root directory has an empty parent ID.
+				if v == "" {
+					continue
+				}
 				if v == fd.ID() || v == fd.parentID() || v == consts.RootDirID {
 					return nil
 				}
