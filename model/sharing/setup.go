@@ -151,6 +151,9 @@ func (s *Sharing) Setup(inst *instance.Instance, m *Member) {
 // AddTrackTriggers creates the share-track triggers for each rule of the
 // sharing that will update the io.cozy.shared database.
 func (s *Sharing) AddTrackTriggers(inst *instance.Instance) error {
+	if err := s.ValidateRules(); err != nil {
+		return err
+	}
 	if len(s.Triggers.TrackIDs) > 0 || s.Triggers.TrackID != "" {
 		return nil
 	}

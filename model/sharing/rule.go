@@ -2,6 +2,7 @@ package sharing
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/cozy/cozy-stack/model/permission"
 	"github.com/cozy/cozy-stack/model/vfs"
@@ -58,6 +59,15 @@ func (s *Sharing) ValidateRules() error {
 		}
 		if permission.CheckDoctypeName(rule.DocType, false) != nil {
 			return ErrInvalidRule
+		}
+		// These delimiters would change the meaning of the event trigger.
+		if !utf8.ValidString(rule.Selector) || strings.ContainsAny(rule.Selector, " ,:") {
+			return ErrInvalidRule
+		}
+		for _, value := range rule.Values {
+			if !utf8.ValidString(value) || strings.ContainsAny(value, " ,:") {
+				return ErrInvalidRule
+			}
 		}
 		if rule.DocType == consts.Files {
 			for _, val := range rule.Values {

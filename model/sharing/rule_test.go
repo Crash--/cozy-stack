@@ -166,6 +166,21 @@ func TestRuleAccept(t *testing.T) {
 	assert.False(t, r.Accept(consts.Files, file))
 }
 
+func TestValidateRuleTriggerDelimiters(t *testing.T) {
+	for _, value := range []string{"foo bar", "foo,bar", "foo:bar", "foo\xff", "referenced_by io.cozy.files:CREATED"} {
+		t.Run(value, func(t *testing.T) {
+			s := Sharing{Rules: []Rule{{Title: "test", DocType: consts.Files, Values: []string{value}}}}
+			assert.ErrorIs(t, s.ValidateRules(), ErrInvalidRule)
+			assert.ErrorIs(t, s.AddTrackTriggers(nil), ErrInvalidRule)
+
+			s.Rules[0].Values = []string{"io.cozy.photos.albums/example"}
+			s.Rules[0].Selector = value
+			assert.ErrorIs(t, s.ValidateRules(), ErrInvalidRule)
+			assert.ErrorIs(t, s.AddTrackTriggers(nil), ErrInvalidRule)
+		})
+	}
+}
+
 func TestTriggersArgs(t *testing.T) {
 	r := Rule{
 		Title:    "test triggers args",
