@@ -64,6 +64,12 @@ func OpenURLWithReadOnly(c echo.Context, readOnly bool) error {
 // Routes sets the routing for opening files with editors.
 func Routes(router *echo.Group) {
 	router.GET("/:file-id/open", OpenURL)
+	router.GET("/:file-id/collab", CollabOpen)
+	router.POST("/:file-id/attachments", UploadAttachment)
+	router.GET("/:file-id/attachments/:attachment-id", GetAttachment)
+	router.GET("/collab/:file-id", CollabContent)
+	router.HEAD("/collab/:file-id", CollabContent)
+	router.PUT("/collab/:file-id", CollabSave)
 }
 
 func readOnlyForSharedOpen(pdoc *permission.Permission, readOnly bool) bool {

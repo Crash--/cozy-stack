@@ -1173,6 +1173,44 @@ Content-Type: application/vnd.api+json
 }
 ```
 
+### GET /editor/:file-id/collab
+
+Return what an editor needs to join the Yjs collaboration room of a file. It
+requires a collaboration server in the configuration (`collab.<context>.url`
+and `collab.<context>.secret`), and `GET` access to the file. The mode is
+`edit` when the caller can also write the file, `view` otherwise.
+
+The token is a JWT (HS256, signed with the secret, valid 10 minutes) with the
+instance domain as `iss`, the file id as `sub`, `aud: ["collab"]`, the `mode`,
+and the instance URL in `instance`.
+
+```json
+{
+  "url": "wss://collab.cozy.example",
+  "room": "alice.cozy.example/32e07d806f9b0139c541543d7eb8149c",
+  "mode": "edit",
+  "token": "eyJhbGciOiJIUzI1NiIs..."
+}
+```
+
+### GET /editor/collab/:file-id and PUT /editor/collab/:file-id
+
+Used by the collaboration server only, with a JWT that it signs with the same
+secret (`iss` the instance domain, `sub` the file id, `aud: ["cozy-stack"]`).
+`GET` (and `HEAD`) returns the content of the file and its revision in the
+`X-Cozy-Rev` header. `PUT` takes `{"content": "<base64>", "markdown": "..."}`,
+replaces the content (a new version is kept as usual), stores the markdown in
+`metadata.markdown`, and answers `412 Precondition Failed` when `If-Match`
+is not the current revision.
+
+### POST /editor/:file-id/attachments and GET /editor/:file-id/attachments/:attachment-id
+
+Store an image for the editor of the file (`POST`, with the image as body and
+its type as `Content-Type`, requires write access to the file), and read it
+back (`GET`, requires read access to the file). The image is a regular file in
+`/.cozy_editor_attachments/<file-id>/`, and its rights are the ones of the
+file it belongs to.
+
 ### GET /files/:file-id/thumbnails/:secret/:format
 
 Get a thumbnail of a file (for an image & pdf only). `:format` can be `tiny` (96x96)

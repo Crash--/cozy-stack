@@ -150,6 +150,7 @@ type Config struct {
 	CommonSettings map[string]CommonSettings
 	ContactsSearch map[string]ContactsSearch
 	Office         map[string]Office
+	Collab         map[string]Collab
 	Registries     map[string][]*url.URL
 	Clouderies     map[string]ClouderyConfig
 
@@ -302,6 +303,13 @@ type Office struct {
 	OnlyOfficeURL string
 	InboxSecret   string
 	OutboxSecret  string
+}
+
+// Collab contains the configuration for a Yjs collaboration server, used by
+// the editors that keep a Yjs document in a file (Docs notes).
+type Collab struct {
+	URL    string
+	Secret string
 }
 
 // RAGServer contains the configuration for a RAG server (AI features).
@@ -1293,6 +1301,7 @@ func UseViper(v *viper.Viper) error {
 		Contexts:               v.GetStringMap("contexts"),
 		Authentication:         v.GetStringMap("authentication"),
 		Office:                 office,
+		Collab:                 makeCollab(v),
 		Registries:             regs,
 		AuthorizedForConfirm:   v.GetStringSlice("authorized_hosts_for_confirm_auth"),
 
@@ -1517,6 +1526,17 @@ func makeOffice(v *viper.Viper) (map[string]Office, error) {
 	}
 
 	return office, nil
+}
+
+func makeCollab(v *viper.Viper) map[string]Collab {
+	collab := make(map[string]Collab)
+	for k := range v.GetStringMap("collab") {
+		collab[k] = Collab{
+			URL:    strings.TrimRight(v.GetString("collab."+k+".url"), "/"),
+			Secret: v.GetString("collab." + k + ".secret"),
+		}
+	}
+	return collab
 }
 
 func makeSMS(raw map[string]interface{}) map[string]SMS {
