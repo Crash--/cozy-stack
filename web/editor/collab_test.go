@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	notemodel "github.com/cozy/cozy-stack/model/note"
 	"github.com/cozy/cozy-stack/pkg/config/config"
 	"github.com/cozy/cozy-stack/pkg/consts"
 	"github.com/cozy/cozy-stack/tests/testutils"
@@ -71,7 +72,7 @@ func TestCollab(t *testing.T) {
 		people.Value(0).Object().Value("id").IsEqual("owner:" + inst.Domain)
 	})
 
-	t.Run("AttachmentsLiveInTheFixedDirectory", func(t *testing.T) {
+	t.Run("ImagesFollowTheNote", func(t *testing.T) {
 		e := testutils.CreateTestClient(t, ts.URL)
 		id := e.POST("/editor/"+fileID+"/attachments").
 			WithQuery("Name", "a.png").
@@ -79,9 +80,6 @@ func TestCollab(t *testing.T) {
 			WithHeader("Content-Type", "image/png").
 			WithBytes([]byte("png")).
 			Expect().Status(201).JSON().Object().Value("id").String().Raw()
-		att, err := inst.VFS().FileByID(id)
-		require.NoError(t, err)
-		require.Equal(t, AttachmentsDirID, att.DirID)
 		e.GET("/editor/"+fileID+"/attachments/"+id).
 			WithHeader("Authorization", "Bearer "+token).
 			Expect().Status(200).Body().IsEqual("png")
@@ -89,6 +87,17 @@ func TestCollab(t *testing.T) {
 		e.GET("/editor/"+other+"/attachments/"+id).
 			WithHeader("Authorization", "Bearer "+token).
 			Expect().Status(404)
+
+		// A copy of the note gets its own images, under the same ids.
+		src, err := inst.VFS().FileByID(fileID)
+		require.NoError(t, err)
+		dst := createEditorFile(t, inst, "copy.docsnote", "application/octet-stream", "application")
+		dstDoc, err := inst.VFS().FileByID(dst)
+		require.NoError(t, err)
+		require.NoError(t, notemodel.CopyImagesForDocsNote(inst, src.ID(), inst, dstDoc))
+		e.GET("/editor/"+dst+"/attachments/"+id).
+			WithHeader("Authorization", "Bearer "+token).
+			Expect().Status(200).Body().IsEqual("png")
 	})
 
 	t.Run("ContentRoutesNeedTheServerToken", func(t *testing.T) {
