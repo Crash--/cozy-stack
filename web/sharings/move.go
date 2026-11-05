@@ -15,6 +15,7 @@ import (
 	"github.com/cozy/cozy-stack/client"
 	"github.com/cozy/cozy-stack/client/request"
 	"github.com/cozy/cozy-stack/model/instance"
+	"github.com/cozy/cozy-stack/model/note"
 	"github.com/cozy/cozy-stack/model/sharing"
 	"github.com/cozy/cozy-stack/model/vfs"
 	"github.com/cozy/cozy-stack/pkg/consts"
@@ -467,6 +468,11 @@ func moveFileSameStackCore(srcInst *instance.Instance, destInst *instance.Instan
 
 	if err := copyFileContent(destInst.VFS(), newFileDoc, srcInst.VFS(), srcFile); err != nil {
 		return nil, err
+	}
+	if srcFile.Mime == consts.DocsNoteMimeType {
+		if err := note.CopyImagesForDocsNote(srcInst, srcFile.ID(), destInst, newFileDoc); err != nil {
+			return nil, err
+		}
 	}
 	if deleteSource {
 		if err := deleteSourceFile(srcInst.VFS(), srcFile); err != nil {

@@ -459,6 +459,9 @@ func CopyFile(c echo.Context, inst *instance.Instance, sharedDrive *sharing.Shar
 		err = note.CopyFile(inst, olddoc, newdoc)
 	} else {
 		err = fs.CopyFile(olddoc, newdoc)
+		if err == nil && olddoc.Mime == consts.DocsNoteMimeType {
+			err = note.CopyImagesForDocsNote(inst, olddoc.ID(), inst, newdoc)
+		}
 	}
 	if err != nil {
 		return WrapVfsError(err)

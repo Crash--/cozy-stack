@@ -27,6 +27,9 @@ const (
 	ShortcutMimeType = "application/internet-shortcut"
 	// NoteMimeType is the mime-type for the .cozy-note files.
 	NoteMimeType = "text/vnd.cozy.note+markdown"
+	// DocsNoteMimeType is the mime-type for the .docsnote files (Yjs state of
+	// a BlockNote document), whose images are stored like the notes ones.
+	DocsNoteMimeType = "application/vnd.twake.docsnote+yjs"
 	// NoteExtension is the extension for the .cozy-note files.
 	NoteExtension = ".cozy-note"
 	// DocsExtension is the extension for the .docs-note files.

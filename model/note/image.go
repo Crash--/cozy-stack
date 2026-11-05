@@ -74,7 +74,10 @@ type ImageUpload struct {
 // NewImageUpload can be used to manage uploading a new image for a note.
 func NewImageUpload(inst *instance.Instance, note *vfs.FileDoc, name, mime string) (*ImageUpload, error) {
 	uuidv7, _ := uuid.NewV7()
-	id := note.ID() + "/" + uuidv7.String()
+	return newImageUpload(inst, note, note.ID()+"/"+uuidv7.String(), name, mime)
+}
+
+func newImageUpload(inst *instance.Instance, note *vfs.FileDoc, id, name, mime string) (*ImageUpload, error) {
 	md := metadata.New()
 	md.CreatedByApp = consts.NotesSlug
 	img := &Image{DocID: id, Name: name, Mime: mime, Metadata: *md, originalName: name}
@@ -282,3 +285,35 @@ func hasImages(images []*Image) bool {
 }
 
 var _ couchdb.Doc = &Image{}
+
+// CopyImagesForDocsNote copies the images of a Docs note to another note,
+// possibly on another instance. The part of the image id after the note id is
+// kept: the Yjs state of a Docs note refers to its images by that part, so the
+// copied content needs no rewrite.
+func CopyImagesForDocsNote(srcInst *instance.Instance, srcNoteID string, dstInst *instance.Instance, dst *vfs.FileDoc) error {
+	images, err := GetImages(srcInst, srcNoteID)
+	if err != nil {
+		return err
+	}
+	for _, img := range images {
+		suffix := strings.TrimPrefix(img.ID(), srcNoteID+"/")
+		thumb, err := srcInst.ThumbsFS().OpenNoteThumb(img.ID(), consts.NoteImageOriginalFormat)
+		if err != nil {
+			return err
+		}
+		upload, err := newImageUpload(dstInst, dst, dst.ID()+"/"+suffix, img.Name, img.Mime)
+		if err != nil {
+			_ = thumb.Close()
+			return err
+		}
+		_, err = io.Copy(upload, thumb)
+		_ = thumb.Close()
+		if cerr := upload.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}

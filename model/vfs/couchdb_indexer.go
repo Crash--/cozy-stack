@@ -247,7 +247,7 @@ func (c *couchdbIndexer) DeleteFileDoc(doc *FileDoc) error {
 	if _, err := doc.Path(c); err != nil {
 		return err
 	}
-	if doc.Mime == consts.NoteMimeType {
+	if doc.Mime == consts.NoteMimeType || doc.Mime == consts.DocsNoteMimeType {
 		DeleteNote(c.db, doc.DocID)
 	}
 	return couchdb.DeleteDoc(c.db, doc)
@@ -339,7 +339,7 @@ func (c *couchdbIndexer) DeleteDirDocAndContent(doc *DirDoc, onlyContent bool) (
 			docs = append(docs, cloned)
 			files = append(files, cloned.(*FileDoc))
 			n += file.ByteSize
-			if file.Mime == consts.NoteMimeType {
+			if file.Mime == consts.NoteMimeType || file.Mime == consts.DocsNoteMimeType {
 				DeleteNote(c.db, file.DocID)
 			}
 		}

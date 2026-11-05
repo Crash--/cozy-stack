@@ -20,6 +20,8 @@ func ByExtension(ext string) string {
 	switch ext {
 	case ".cozy-note":
 		return consts.NoteMimeType
+	case ".docsnote":
+		return consts.DocsNoteMimeType
 	case ".url":
 		return consts.ShortcutMimeType
 	}
