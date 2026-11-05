@@ -1220,11 +1220,16 @@ is not the current revision.
 
 Store an image for the editor of the file (`POST`, with the image as body and
 its type as `Content-Type`, requires write access to the file), and read it
-back (`GET`, requires read access to the file). The image is a regular file in
-`/.cozy_editor_attachments`, a directory with the fixed id
-`io.cozy.files.editor-attachments-dir` that Drive leaves out of its listings.
-Its name starts with the id of the file it belongs to, and its rights are the
-ones of that file.
+back (`GET`, requires read access to the file). The image is stored like the
+images of cozy-notes: in the hidden storage of the stack, with an
+`io.cozy.notes.images` document whose id starts with the id of the file. It
+never shows up as an `io.cozy.files`, and its rights are the ones of the file
+it belongs to. A read-only member of a shared drive cannot add one.
+
+The images follow the file: they are removed with it, copied with it by
+`POST /files/:file-id/copy`, and copied to the destination when the file is
+moved or copied to another drive with `POST /sharings/drives/move` (same stack
+only).
 
 ### GET /files/:file-id/thumbnails/:secret/:format
 
