@@ -40,6 +40,7 @@ import (
 	"github.com/cozy/cozy-stack/pkg/utils"
 	"github.com/cozy/cozy-stack/web/middlewares"
 	"github.com/cozy/cozy-stack/worker/thumbnail"
+	"github.com/gofrs/uuid/v5"
 	"github.com/labstack/echo/v4"
 	"github.com/ncw/swift/v2"
 )
@@ -160,6 +161,16 @@ func createFileHandler(c echo.Context, fs vfs.VFS, sharedDrive *sharing.Sharing)
 		}
 	}
 	doc.CozyMetadata, _ = CozyMetadataFromClaims(c, true)
+
+	// An app pointing to the file from its own storage (a Docs document) can
+	// choose the id, so that both share one RFC 4122 identifier.
+	if id := c.QueryParam("ID"); id != "" {
+		parsed, err := uuid.FromString(id)
+		if err != nil || parsed.Version() == 0 || parsed.String() != id {
+			return nil, jsonapi.InvalidParameter("ID", errors.New("expected a lowercase RFC 4122 UUID"))
+		}
+		doc.SetID(id)
+	}
 
 	err = checkPerm(c, "POST", nil, doc)
 	if err != nil {

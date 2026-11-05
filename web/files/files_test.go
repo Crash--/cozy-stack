@@ -315,6 +315,33 @@ func TestFiles(t *testing.T) {
 		fcm.NotContainsKey("uploadedAt")
 	})
 
+	t.Run("CreateFileWithID", func(t *testing.T) {
+		e := testutils.CreateTestClient(t, ts.URL)
+		id := "0d6c1a3e-2b7f-4c1e-9a55-3f0e8b1d2c4a"
+
+		e.POST("/files/").
+			WithQuery("Name", "pointer.url").
+			WithQuery("Type", "file").
+			WithQuery("ID", id).
+			WithHeader("Content-Type", "application/internet-shortcut").
+			WithHeader("Authorization", "Bearer "+token).
+			WithBytes([]byte("[InternetShortcut]\n")).
+			Expect().Status(201).
+			JSON(httpexpect.ContentOpts{MediaType: "application/vnd.api+json"}).
+			Object().Path("$.data.id").IsEqual(id)
+
+		for _, bad := range []string{"not-a-uuid", "0D6C1A3E-2B7F-4C1E-9A55-3F0E8B1D2C4A", "00000000-0000-0000-0000-000000000000"} {
+			e.POST("/files/").
+				WithQuery("Name", "bad-"+bad).
+				WithQuery("Type", "file").
+				WithQuery("ID", bad).
+				WithHeader("Content-Type", "text/plain").
+				WithHeader("Authorization", "Bearer "+token).
+				WithBytes([]byte("x")).
+				Expect().Status(422)
+		}
+	})
+
 	t.Run("CreateDirWithDateSuccessAndUpdatedAt", func(t *testing.T) {
 		e := testutils.CreateTestClient(t, ts.URL)
 
