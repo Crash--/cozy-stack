@@ -65,6 +65,7 @@ func OpenURLWithReadOnly(c echo.Context, readOnly bool) error {
 func Routes(router *echo.Group) {
 	router.GET("/:file-id/open", OpenURL)
 	router.GET("/:file-id/collab", CollabOpen)
+	router.GET("/:file-id/people", People)
 	router.POST("/:file-id/attachments", UploadAttachment)
 	router.GET("/:file-id/attachments/:attachment-id", GetAttachment)
 	router.GET("/collab/:file-id", CollabContent)

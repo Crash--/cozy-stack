@@ -13,8 +13,11 @@ import (
 
 	"github.com/cozy/cozy-stack/model/instance"
 	"github.com/cozy/cozy-stack/model/permission"
+	"github.com/cozy/cozy-stack/model/settings"
+	"github.com/cozy/cozy-stack/model/sharing"
 	"github.com/cozy/cozy-stack/model/vfs"
 	"github.com/cozy/cozy-stack/pkg/config/config"
+	"github.com/cozy/cozy-stack/pkg/consts"
 	"github.com/cozy/cozy-stack/pkg/crypto"
 	"github.com/cozy/cozy-stack/pkg/jsonapi"
 	"github.com/cozy/cozy-stack/pkg/metadata"
@@ -31,9 +34,16 @@ import (
 const (
 	collabUserAudience   = "collab"
 	collabServerAudience = "cozy-stack"
-	collabTokenTTL       = 10 * time.Minute
-	collabSlug           = "collab-server"
-	attachmentsRoot      = "/.cozy_editor_attachments"
+	// A room token is refreshed by the editor while the room is open, so a
+	// revoked right closes the session within this delay.
+	collabTokenTTL = time.Minute
+	collabSlug     = "collab-server"
+	// AttachmentsSlug marks the image files of the editors, that Drive hides.
+	AttachmentsSlug = "editor-attachments"
+	attachmentsRoot = "/.cozy_editor_attachments"
+	// AttachmentsDirID is the fixed id of attachmentsRoot, so that Drive can
+	// leave it out of its listings like the trash.
+	AttachmentsDirID     = "io.cozy.files.editor-attachments-dir"
 	maxCollabContentSize = 64 << 20
 	revHeader            = "X-Cozy-Rev"
 )
@@ -42,6 +52,41 @@ type collabClaims struct {
 	jwt.RegisteredClaims
 	Mode     string `json:"mode,omitempty"`
 	Instance string `json:"instance,omitempty"`
+	User     string `json:"user,omitempty"`
+	Name     string `json:"name,omitempty"`
+}
+
+// collabIdentity tells who opens the room: the owner of the instance, a
+// member of a sharing (found by the code of the request), or a guest of a
+// share link. Comments and mentions rely on it, not on a name the browser
+// would choose.
+func collabIdentity(c echo.Context, inst *instance.Instance) (string, string) {
+	pdoc, err := middlewares.GetPermission(c)
+	if err != nil || (pdoc.Type != permission.TypeSharePreview && pdoc.Type != permission.TypeShareInteract &&
+		pdoc.Type != permission.TypeShareByLink) {
+		name, _ := settings.PublicName(inst)
+		return "owner:" + inst.Domain, name
+	}
+	code := middlewares.GetRequestToken(c)
+	key := ""
+	for k, v := range pdoc.Codes {
+		if v == code {
+			key = k
+		}
+	}
+	for k, v := range pdoc.ShortCodes {
+		if v == code {
+			key = k
+		}
+	}
+	if s, err := sharing.FindSharing(inst, strings.TrimPrefix(pdoc.SourceID, consts.Sharings+"/")); err == nil && key != "" {
+		for _, m := range s.Members {
+			if m.Email == key || m.Instance == key {
+				return "member:" + key, m.PrimaryName()
+			}
+		}
+	}
+	return "guest:" + pdoc.ID(), ""
 }
 
 func getCollabConfig(inst *instance.Instance) *config.Collab {
@@ -88,6 +133,7 @@ func CollabOpen(c echo.Context) error {
 		Mode:     mode,
 		Instance: strings.TrimRight(inst.PageURL("/", nil), "/"),
 	}
+	claims.User, claims.Name = collabIdentity(c, inst)
 	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, &claims).SignedString([]byte(cfg.Secret))
 	if err != nil {
 		return err
@@ -97,6 +143,8 @@ func CollabOpen(c echo.Context) error {
 		"room":  inst.Domain + "/" + file.ID(),
 		"mode":  mode,
 		"token": token,
+		"user":  claims.User,
+		"name":  claims.Name,
 	})
 }
 
@@ -225,23 +273,22 @@ func UploadAttachment(c echo.Context) error {
 	if err := middlewares.AllowVFS(c, permission.PUT, note); err != nil {
 		return err
 	}
-	// shortcut: a plain directory, visible at the root of the owner's Drive;
-	// a system directory hidden by Drive (or the thumbs storage used by
-	// cozy-notes) before shipping.
-	dir, err := vfs.MkdirAll(fs, path.Join(attachmentsRoot, note.ID()))
-	if err != nil {
+	if err := ensureAttachmentsRoot(inst); err != nil {
 		return wrapError(err)
 	}
 	mime := c.Request().Header.Get(echo.HeaderContentType)
 	if !strings.HasPrefix(mime, "image/") {
 		return jsonapi.BadRequest(errors.New("only images"))
 	}
-	name := fmt.Sprintf("%d%s", time.Now().UnixNano(), path.Ext(path.Base(c.QueryParam("Name"))))
-	doc, err := vfs.NewFileDoc(name, dir.ID(), c.Request().ContentLength, nil, mime, "image",
+	// The note id prefixes the name: the attachment belongs to that note.
+	name := fmt.Sprintf("%s-%d%s", note.ID(), time.Now().UnixNano(), path.Ext(path.Base(c.QueryParam("Name"))))
+	doc, err := vfs.NewFileDoc(name, AttachmentsDirID, c.Request().ContentLength, nil, mime, "image",
 		time.Now(), false, false, false, nil)
 	if err != nil {
 		return jsonapi.BadRequest(err)
 	}
+	doc.CozyMetadata = vfs.NewCozyMetadata(inst.PageURL("/", nil))
+	doc.CozyMetadata.CreatedByApp = AttachmentsSlug
 	f, err := fs.CreateFile(doc, nil)
 	if err != nil {
 		return wrapError(err)
@@ -268,16 +315,88 @@ func GetAttachment(c echo.Context) error {
 	if err := middlewares.AllowVFS(c, permission.GET, note); err != nil {
 		return err
 	}
-	dir, err := fs.DirByPath(path.Join(attachmentsRoot, note.ID()))
-	if err != nil {
-		return wrapError(err)
-	}
 	att, err := fs.FileByID(c.Param("attachment-id"))
 	if err != nil {
 		return wrapError(err)
 	}
-	if att.DirID != dir.ID() {
+	if att.DirID != AttachmentsDirID || !strings.HasPrefix(att.DocName, note.ID()+"-") {
 		return jsonapi.NotFound(os.ErrNotExist)
 	}
 	return vfs.ServeFileContent(fs, att, nil, "", "inline", c.Request(), c.Response())
+}
+
+type person struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// People is the handler for GET /editor/:file-id/people. It lists who can
+// read the file (the owner and the members of the sharings that contain it),
+// for the mentions of the editor. It needs read access to the file.
+func People(c echo.Context) error {
+	inst := middlewares.GetInstance(c)
+	fs := inst.VFS()
+	file, err := fs.FileByID(c.Param("file-id"))
+	if err != nil {
+		return wrapError(err)
+	}
+	if err := middlewares.AllowVFS(c, permission.GET, file); err != nil {
+		return err
+	}
+	filePath, err := file.Path(fs)
+	if err != nil {
+		return wrapError(err)
+	}
+	owner, _ := settings.PublicName(inst)
+	people := []person{{ID: "owner:" + inst.Domain, Name: owner}}
+	sharings, err := sharing.GetSharingsByDocType(inst, consts.Files)
+	if err != nil {
+		return wrapError(err)
+	}
+	for _, s := range sharings {
+		if !s.Active || !sharingContains(fs, s, file.ID(), filePath) {
+			continue
+		}
+		for i, m := range s.Members {
+			key := m.Email
+			if key == "" {
+				key = m.Instance
+			}
+			if i == 0 || key == "" || m.Status != sharing.MemberStatusReady {
+				continue
+			}
+			people = append(people, person{ID: "member:" + key, Name: m.PrimaryName()})
+		}
+	}
+	return c.JSON(http.StatusOK, people)
+}
+
+func sharingContains(fs vfs.VFS, s *sharing.Sharing, fileID, filePath string) bool {
+	rule := s.FirstFilesRule()
+	if rule == nil {
+		return false
+	}
+	for _, id := range rule.Values {
+		if id == fileID {
+			return true
+		}
+		if dir, err := fs.DirByID(id); err == nil && strings.HasPrefix(filePath, dir.Fullpath+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func ensureAttachmentsRoot(inst *instance.Instance) error {
+	dir, err := vfs.NewDirDocWithPath(path.Base(attachmentsRoot), consts.RootDirID, "/", nil)
+	if err != nil {
+		return err
+	}
+	dir.SetID(AttachmentsDirID)
+	dir.CozyMetadata = vfs.NewCozyMetadata(inst.PageURL("/", nil))
+	dir.CozyMetadata.CreatedByApp = AttachmentsSlug
+	if err := inst.VFS().CreateDir(dir); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	return nil
 }

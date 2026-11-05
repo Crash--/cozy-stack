@@ -60,6 +60,35 @@ func TestCollab(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, fileID, claims.Subject)
 		require.Equal(t, "edit", claims.Mode)
+		require.Equal(t, "owner:"+inst.Domain, claims.User)
+	})
+
+	t.Run("PeopleListsTheOwner", func(t *testing.T) {
+		e := testutils.CreateTestClient(t, ts.URL)
+		people := e.GET("/editor/"+fileID+"/people").
+			WithHeader("Authorization", "Bearer "+token).
+			Expect().Status(200).JSON().Array()
+		people.Value(0).Object().Value("id").IsEqual("owner:" + inst.Domain)
+	})
+
+	t.Run("AttachmentsLiveInTheFixedDirectory", func(t *testing.T) {
+		e := testutils.CreateTestClient(t, ts.URL)
+		id := e.POST("/editor/"+fileID+"/attachments").
+			WithQuery("Name", "a.png").
+			WithHeader("Authorization", "Bearer "+token).
+			WithHeader("Content-Type", "image/png").
+			WithBytes([]byte("png")).
+			Expect().Status(201).JSON().Object().Value("id").String().Raw()
+		att, err := inst.VFS().FileByID(id)
+		require.NoError(t, err)
+		require.Equal(t, AttachmentsDirID, att.DirID)
+		e.GET("/editor/"+fileID+"/attachments/"+id).
+			WithHeader("Authorization", "Bearer "+token).
+			Expect().Status(200).Body().IsEqual("png")
+		other := createEditorFile(t, inst, "other.docsnote", "application/octet-stream", "application")
+		e.GET("/editor/"+other+"/attachments/"+id).
+			WithHeader("Authorization", "Bearer "+token).
+			Expect().Status(404)
 	})
 
 	t.Run("ContentRoutesNeedTheServerToken", func(t *testing.T) {

@@ -1180,18 +1180,31 @@ requires a collaboration server in the configuration (`collab.<context>.url`
 and `collab.<context>.secret`), and `GET` access to the file. The mode is
 `edit` when the caller can also write the file, `view` otherwise.
 
-The token is a JWT (HS256, signed with the secret, valid 10 minutes) with the
+The token is a JWT (HS256, signed with the secret, valid one minute) with the
 instance domain as `iss`, the file id as `sub`, `aud: ["collab"]`, the `mode`,
-and the instance URL in `instance`.
+the instance URL in `instance`, and who opens the room in `user` and `name`:
+`owner:<domain>` for the owner of the instance, `member:<email or instance>`
+for a member of a sharing (found from the sharecode), `guest:<permission id>`
+for a share link. The editor asks for a new token while the room is open, so
+a right that is revoked closes the session within that minute.
 
 ```json
 {
   "url": "wss://collab.cozy.example",
   "room": "alice.cozy.example/32e07d806f9b0139c541543d7eb8149c",
   "mode": "edit",
-  "token": "eyJhbGciOiJIUzI1NiIs..."
+  "token": "eyJhbGciOiJIUzI1NiIs...",
+  "user": "member:bob@cozy.example",
+  "name": "Bob"
 }
 ```
+
+### GET /editor/:file-id/people
+
+List who can read the file, for mentions and comment authors: the owner of
+the instance and the ready members of the active sharings containing the
+file, as `[{"id": "member:bob@cozy.example", "name": "Bob"}]`. It requires
+`GET` access to the file.
 
 ### GET /editor/collab/:file-id and PUT /editor/collab/:file-id
 
@@ -1208,8 +1221,10 @@ is not the current revision.
 Store an image for the editor of the file (`POST`, with the image as body and
 its type as `Content-Type`, requires write access to the file), and read it
 back (`GET`, requires read access to the file). The image is a regular file in
-`/.cozy_editor_attachments/<file-id>/`, and its rights are the ones of the
-file it belongs to.
+`/.cozy_editor_attachments`, a directory with the fixed id
+`io.cozy.files.editor-attachments-dir` that Drive leaves out of its listings.
+Its name starts with the id of the file it belongs to, and its rights are the
+ones of that file.
 
 ### GET /files/:file-id/thumbnails/:secret/:format
 
