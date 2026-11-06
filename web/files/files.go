@@ -1289,7 +1289,9 @@ func SendFileFromDoc(instance *instance.Instance, c echo.Context, doc *vfs.FileD
 		}
 		err = vfs.ServePDFPage(instance.VFS(), doc, disposition, p, c.Request(), c.Response())
 	} else {
-		err = vfs.ServeFileContent(instance.VFS(), doc, nil, "", disposition, c.Request(), c.Response())
+		// A download link (/downloads/:secret/:fake-name) carries the name the client
+		// asked for with Filename: keep it in the Content-Disposition.
+		err = vfs.ServeFileContent(instance.VFS(), doc, nil, c.Param("fake-name"), disposition, c.Request(), c.Response())
 	}
 	if err != nil {
 		return WrapVfsError(err)

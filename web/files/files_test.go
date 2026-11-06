@@ -2797,6 +2797,19 @@ func TestFiles(t *testing.T) {
 			WithQuery("Dl", "1").
 			Expect().Status(200).
 			Header("Content-Disposition").Equal(`attachment; filename="todownload2steps"`)
+
+		// A name asked with Filename is the one the browser saves.
+		renamed := e.POST("/files/downloads").
+			WithQuery("Path", "/todownload2steps").
+			WithQuery("Filename", "export.md").
+			WithHeader("Authorization", "Bearer "+token).
+			Expect().Status(200).
+			JSON(httpexpect.ContentOpts{MediaType: "application/vnd.api+json"}).
+			Object().Path("$.links.related").String().NotEmpty().Raw()
+		e.GET(renamed).
+			WithQuery("Dl", "1").
+			Expect().Status(200).
+			Header("Content-Disposition").Equal(`attachment; filename="export.md"`)
 	})
 
 	t.Run("FileCreateAndDownloadByID", func(t *testing.T) {
