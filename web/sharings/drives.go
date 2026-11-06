@@ -1602,6 +1602,7 @@ func PatchSharedDrivePermissionHandler(c echo.Context, inst *instance.Instance, 
 	if err := couchdb.UpdateDoc(inst, ctx.mutation.existingPerm); err != nil {
 		return err
 	}
+	permission.LinkChanged(inst, permission.LinkUpdated, ctx.mutation.existingPerm)
 
 	publiclinkevents.Record(c, inst, ctx.mutation.existingPerm, publiclink.Updated)
 
