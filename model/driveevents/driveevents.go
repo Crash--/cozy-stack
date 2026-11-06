@@ -24,6 +24,7 @@ const WorkerType = "drive-events"
 
 // The event types, used as routing keys.
 const (
+	FileCreated   = "file.created"
 	FileCopied    = "file.copied"
 	FileMoved     = "file.moved"
 	FileTrashed   = "file.trashed"
@@ -138,6 +139,8 @@ func fileChanged(db prefixer.Prefixer, olddoc, newdoc *vfs.FileDoc) {
 	case olddoc == nil:
 		if from := newdoc.CopiedFrom(); from != nil {
 			emit(db, FileCopied, fileData(domain, newdoc, from))
+		} else {
+			emit(db, FileCreated, fileData(domain, newdoc, nil))
 		}
 	case newdoc == nil:
 		if to := olddoc.MovedTo(); to != nil {

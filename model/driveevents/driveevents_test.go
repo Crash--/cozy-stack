@@ -44,10 +44,11 @@ func TestFileChanged(t *testing.T) {
 	for i, e := range got {
 		types[i] = e.eventType
 	}
-	assert.Equal(t, []string{FileTrashed, FileRestored, FileMoved, FileCopied, FileDestroyed, FileMoved}, types)
+	assert.Equal(t, []string{FileTrashed, FileRestored, FileMoved, FileCopied, FileCreated, FileDestroyed, FileMoved}, types)
 	assert.Equal(t, &File{ID: "f1", Instance: "alice.example"}, got[2].file.From)
 	assert.Equal(t, &File{ID: "f1", Instance: "alice.example"}, got[3].file.From)
-	assert.Equal(t, "f9", got[5].file.ID)
-	assert.Equal(t, "bob.example", got[5].file.Instance)
-	assert.Equal(t, &File{ID: "f1", Instance: "alice.example", DirID: "d1", Name: "a.docs-note"}, got[5].file.From)
+	assert.Nil(t, got[4].file.From)
+	assert.Equal(t, "f9", got[6].file.ID)
+	assert.Equal(t, "bob.example", got[6].file.Instance)
+	assert.Equal(t, &File{ID: "f1", Instance: "alice.example", DirID: "d1", Name: "a.docs-note"}, got[6].file.From)
 }
