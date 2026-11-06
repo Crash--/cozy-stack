@@ -137,21 +137,21 @@ func fileChanged(db prefixer.Prefixer, olddoc, newdoc *vfs.FileDoc) {
 	switch {
 	case olddoc == nil:
 		if from := newdoc.CopiedFrom(); from != nil {
-			emit(db,FileCopied, fileData(domain, newdoc, from))
+			emit(db, FileCopied, fileData(domain, newdoc, from))
 		}
 	case newdoc == nil:
 		if to := olddoc.MovedTo(); to != nil {
 			moved := fileData(domain, olddoc, nil)
-			emit(db,FileMoved, &File{ID: to.ID, Instance: to.Instance, Name: olddoc.DocName, Mime: olddoc.Mime, Metadata: olddoc.Metadata, From: moved})
+			emit(db, FileMoved, &File{ID: to.ID, Instance: to.Instance, Name: olddoc.DocName, Mime: olddoc.Mime, Metadata: olddoc.Metadata, From: moved})
 		} else {
-			emit(db,FileDestroyed, fileData(domain, olddoc, nil))
+			emit(db, FileDestroyed, fileData(domain, olddoc, nil))
 		}
 	case !olddoc.Trashed && newdoc.Trashed:
-		emit(db,FileTrashed, fileData(domain, newdoc, nil))
+		emit(db, FileTrashed, fileData(domain, newdoc, nil))
 	case olddoc.Trashed && !newdoc.Trashed:
-		emit(db,FileRestored, fileData(domain, newdoc, nil))
+		emit(db, FileRestored, fileData(domain, newdoc, nil))
 	case olddoc.DirID != newdoc.DirID:
-		emit(db,FileMoved, fileData(domain, newdoc, &vfs.FileRef{ID: olddoc.ID(), Instance: domain}))
+		emit(db, FileMoved, fileData(domain, newdoc, &vfs.FileRef{ID: olddoc.ID(), Instance: domain}))
 	}
 }
 
