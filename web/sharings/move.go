@@ -426,8 +426,9 @@ func moveDirSameStack(c echo.Context, srcInst *instance.Instance, destInst *inst
 		if !ok {
 			return files.WrapVfsError(errors.New("destination parent directory not found while moving file"))
 		}
-		// When moving a directory we copy files but do not delete sources here
-		if _, err := moveFileSameStackCore(srcInst, destInst, f, destParentID, false); err != nil {
+		// Each file is moved, not copied then destroyed with its directory: the
+		// drive events must see a move, not a copy and a destruction.
+		if _, err := moveFileSameStackCore(srcInst, destInst, f, destParentID, !copy); err != nil {
 			return err
 		}
 	}
