@@ -852,7 +852,11 @@ func (s *Sharing) RevokeRecipientBySelf(inst *instance.Instance, sharingDirTrash
 		}
 	}
 
-	return couchdb.UpdateDoc(inst, s)
+	if err := couchdb.UpdateDoc(inst, s); err != nil {
+		return err
+	}
+	s.emitMember(inst, memberRemoved, nil)
+	return nil
 }
 
 // RemoveTriggers remove all the triggers associated to this sharing
@@ -950,6 +954,9 @@ func (s *Sharing) RevokeByNotification(inst *instance.Instance) error {
 		}
 
 		err := couchdb.UpdateDoc(inst, s)
+		if err == nil {
+			s.emitMember(inst, memberRemoved, nil)
+		}
 		if err == nil || !couchdb.IsConflictError(err) {
 			break
 		}
@@ -983,7 +990,11 @@ func (s *Sharing) RevokeRecipientByNotification(inst *instance.Instance, m *Memb
 	m.Status = MemberStatusRevoked
 	*c = Credentials{}
 
-	return s.NoMoreRecipient(inst)
+	if err := s.NoMoreRecipient(inst); err != nil {
+		return err
+	}
+	s.emitMember(inst, memberRemoved, m)
+	return nil
 }
 
 // NoMoreRecipient keeps empty org drives active and cleans up other sharings.

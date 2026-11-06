@@ -1097,10 +1097,15 @@ func (s *Sharing) ownerTarget(index int) (*Member, *Credentials, *url.URL, error
 // AddReadOnlyFlag adds the read-only flag of a recipient, and send
 // an access token with a short validity to let it synchronize its last
 // changes.
-func (s *Sharing) AddReadOnlyFlag(inst *instance.Instance, index int) error {
+func (s *Sharing) AddReadOnlyFlag(inst *instance.Instance, index int) (err error) {
 	if index <= 0 || index >= len(s.Members) {
 		return ErrMemberNotFound
 	}
+	defer func() {
+		if err == nil {
+			s.emitMember(inst, memberUpdated, &s.Members[index])
+		}
+	}()
 	if s.ReadOnlyFlag() {
 		return ErrInvalidSharing
 	}
@@ -1250,6 +1255,7 @@ func (s *Sharing) DowngradeToReadOnly(inst *instance.Instance, creds *APICredent
 	if err := couchdb.UpdateDoc(inst, s); err != nil {
 		return err
 	}
+	s.emitMember(inst, memberUpdated, nil)
 
 	s.pushJob(inst, "share-replicate")
 	if s.FirstFilesRule() != nil {
@@ -1260,10 +1266,15 @@ func (s *Sharing) DowngradeToReadOnly(inst *instance.Instance, creds *APICredent
 
 // RemoveReadOnlyFlag removes the read-only flag of a recipient, and send
 // credentials to their cozy so that it can push its changes.
-func (s *Sharing) RemoveReadOnlyFlag(inst *instance.Instance, index int) error {
+func (s *Sharing) RemoveReadOnlyFlag(inst *instance.Instance, index int) (err error) {
 	if index <= 0 || index >= len(s.Members) {
 		return ErrMemberNotFound
 	}
+	defer func() {
+		if err == nil {
+			s.emitMember(inst, memberUpdated, &s.Members[index])
+		}
+	}()
 	if s.ReadOnlyFlag() {
 		return ErrInvalidSharing
 	}
@@ -1355,7 +1366,11 @@ func (s *Sharing) UpgradeToReadWrite(inst *instance.Instance, creds *APICredenti
 	s.Credentials[0].XorKey = creds.XorKey
 	s.Credentials[0].AccessToken = creds.AccessToken
 	s.Credentials[0].Client = creds.Client
-	return couchdb.UpdateDoc(inst, s)
+	if err := couchdb.UpdateDoc(inst, s); err != nil {
+		return err
+	}
+	s.emitMember(inst, memberUpdated, nil)
+	return nil
 }
 
 // DelegateRemoveReadOnlyFlag is used by a recipient to ask the sharer to
@@ -1478,6 +1493,9 @@ func (s *Sharing) revokeMember(inst *instance.Instance, index int, removedGroupI
 		*c = Credentials{}
 
 		err := couchdb.UpdateDoc(inst, s)
+		if err == nil {
+			s.emitMember(inst, memberRemoved, m)
+		}
 		if !couchdb.IsConflictError(err) || leftRetries == 0 {
 			return err
 		}

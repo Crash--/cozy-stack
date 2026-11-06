@@ -521,7 +521,7 @@ func (s *Sharing) SendAnswer(inst *instance.Instance, state string) error {
 		markSenderContactTrusted(inst, &s.Members[0])
 	}
 
-	return updateSharingWithConflictRetry(inst, s, 1, func(latest *Sharing) bool {
+	err = updateSharingWithConflictRetry(inst, s, 1, func(latest *Sharing) bool {
 		if latest.Active {
 			return true
 		}
@@ -534,6 +534,10 @@ func (s *Sharing) SendAnswer(inst *instance.Instance, state string) error {
 		}
 		return false
 	})
+	if err == nil {
+		s.emitMember(inst, memberAdded, nil)
+	}
+	return err
 }
 
 // markSenderContactTrusted trusts the sender's contact, except for members of
@@ -657,6 +661,7 @@ func (s *Sharing) ProcessAnswer(inst *instance.Instance, creds *APICredentials) 
 			}); err != nil {
 				return nil, err
 			}
+			s.emitMember(inst, memberAdded, &s.Members[i+1])
 			if creds.Bitwarden != nil {
 				if err := s.SaveBitwarden(inst, &s.Members[i+1], creds.Bitwarden); err != nil {
 					return nil, err
