@@ -962,6 +962,8 @@ func CreateFileDocCopy(doc *FileDoc, newDirID, copyName string) *FileDoc {
 	newdoc.RemoveReferencedBy()
 	newdoc.ResetFullpath()
 	newdoc.Metadata.RemoveCertifiedMetadata()
+	newdoc.movedTo = nil
+	newdoc.MarkCopyOf(FileRef{ID: doc.ID()})
 
 	return newdoc
 }

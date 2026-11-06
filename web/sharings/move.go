@@ -463,10 +463,14 @@ func moveFileSameStackCore(srcInst *instance.Instance, destInst *instance.Instan
 		newFileDoc.ResetFullpath()
 	}
 
+	if !deleteSource {
+		newFileDoc.MarkCopyOf(vfs.FileRef{ID: srcFile.ID(), Instance: srcInst.Domain})
+	}
 	if err := copyFileContent(destInst.VFS(), newFileDoc, srcInst.VFS(), srcFile); err != nil {
 		return nil, err
 	}
 	if deleteSource {
+		srcFile.MarkMovedTo(vfs.FileRef{ID: newFileDoc.ID(), Instance: destInst.Domain})
 		if err := deleteSourceFile(srcInst.VFS(), srcFile); err != nil {
 			return nil, err
 		}

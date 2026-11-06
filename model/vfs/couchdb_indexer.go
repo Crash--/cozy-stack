@@ -209,14 +209,22 @@ func (c *couchdbIndexer) CreateFileDoc(doc *FileDoc) error {
 	if err := c.prepareFileDoc(doc); err != nil {
 		return err
 	}
-	return couchdb.CreateDoc(c.db, doc)
+	if err := couchdb.CreateDoc(c.db, doc); err != nil {
+		return err
+	}
+	FileChanged(c.db, nil, doc)
+	return nil
 }
 
 func (c *couchdbIndexer) CreateNamedFileDoc(doc *FileDoc) error {
 	if err := c.prepareFileDoc(doc); err != nil {
 		return err
 	}
-	return couchdb.CreateNamedDoc(c.db, doc)
+	if err := couchdb.CreateNamedDoc(c.db, doc); err != nil {
+		return err
+	}
+	FileChanged(c.db, nil, doc)
+	return nil
 }
 
 func (c *couchdbIndexer) UpdateFileDoc(olddoc, newdoc *FileDoc) error {
@@ -237,8 +245,18 @@ func (c *couchdbIndexer) UpdateFileDoc(olddoc, newdoc *FileDoc) error {
 
 	newdoc.SetID(olddoc.ID())
 	newdoc.SetRev(olddoc.Rev())
-	return couchdb.UpdateDocWithOld(c.db, newdoc, olddoc)
+	if err := couchdb.UpdateDocWithOld(c.db, newdoc, olddoc); err != nil {
+		return err
+	}
+	FileChanged(c.db, olddoc, newdoc)
+	return nil
 }
+
+// FileChanged is called once the index has recorded a change to a file:
+// olddoc is nil for a creation, newdoc is nil for a destruction. Copies and
+// moves to another instance are marked on the documents (see
+// FileDoc.MarkCopyOf and FileDoc.MarkMovedTo).
+var FileChanged = func(db prefixer.Prefixer, olddoc, newdoc *FileDoc) {}
 
 var DeleteNote = func(db prefixer.Prefixer, noteID string) {}
 
@@ -261,7 +279,11 @@ func (c *couchdbIndexer) DeleteFileDoc(doc *FileDoc) error {
 // references were removed when they were trashed.
 func (c *couchdbIndexer) DestroyFileDoc(doc *FileDoc) error {
 	c.revokeSharingRefsOnFile(doc)
-	return c.DeleteFileDoc(doc)
+	if err := c.DeleteFileDoc(doc); err != nil {
+		return err
+	}
+	FileChanged(c.db, doc, nil)
+	return nil
 }
 
 func (c *couchdbIndexer) CreateDirDoc(doc *DirDoc) error {
@@ -347,6 +369,11 @@ func (c *couchdbIndexer) DeleteDirDocAndContent(doc *DirDoc, onlyContent bool) (
 	}, 0)
 	if err == nil {
 		err = c.BatchDelete(docs)
+	}
+	if err == nil {
+		for _, f := range files {
+			FileChanged(c.db, f, nil)
+		}
 	}
 	return
 }
@@ -707,7 +734,13 @@ func (c *couchdbIndexer) setTrashedForFilesInsideDir(doc *DirDoc, trashed bool) 
 	if err != nil {
 		return err
 	}
-	return c.BatchUpdate(files, olddocs)
+	if err := c.BatchUpdate(files, olddocs); err != nil {
+		return err
+	}
+	for i := range files {
+		FileChanged(c.db, olddocs[i].(*FileDoc), files[i].(*FileDoc))
+	}
+	return nil
 }
 
 func (c *couchdbIndexer) BatchUpdate(docs, oldDocs []interface{}) error {
