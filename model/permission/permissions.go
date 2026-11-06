@@ -164,8 +164,25 @@ func (p *Permission) PatchCodes(codes map[string]string) {
 
 // Revoke destroy a Permission
 func (p *Permission) Revoke(db prefixer.Prefixer) error {
-	return couchdb.DeleteDoc(db, p)
+	if err := couchdb.DeleteDoc(db, p); err != nil {
+		return err
+	}
+	if p.Type == TypeShareByLink {
+		LinkChanged(db, LinkRevoked, p)
+	}
+	return nil
 }
+
+// What happened to a share by link, for LinkChanged.
+const (
+	LinkCreated = "created"
+	LinkUpdated = "updated"
+	LinkRevoked = "revoked"
+)
+
+// LinkChanged is called once a share by link has been created, updated or
+// revoked.
+var LinkChanged = func(db prefixer.Prefixer, change string, p *Permission) {}
 
 // CanUpdateShareByLink check if the child permissions can be updated by p
 // (p can be the parent or it has a superset of the permissions).
@@ -812,6 +829,7 @@ func CreateShareSet(
 	if err != nil {
 		return nil, err
 	}
+	LinkChanged(db, LinkCreated, doc)
 
 	return doc, nil
 }

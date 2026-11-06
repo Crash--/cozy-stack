@@ -531,6 +531,9 @@ func patchPermission(getPerms getPermsFunc, paramName string) echo.HandlerFunc {
 		if err = couchdb.UpdateDoc(instance, toPatch); err != nil {
 			return err
 		}
+		if toPatch.Type == permission.TypeShareByLink {
+			permission.LinkChanged(instance, permission.LinkUpdated, toPatch)
+		}
 
 		// Don't send the password hash to the client
 		if toPatch.Password != nil {

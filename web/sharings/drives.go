@@ -1587,6 +1587,7 @@ func PatchSharedDrivePermissionHandler(c echo.Context, inst *instance.Instance, 
 	if err := couchdb.UpdateDoc(inst, ctx.mutation.existingPerm); err != nil {
 		return err
 	}
+	permission.LinkChanged(inst, permission.LinkUpdated, ctx.mutation.existingPerm)
 
 	// Don't send the password hash to the client
 	if ctx.mutation.existingPerm.Password != nil {
