@@ -63,9 +63,34 @@ type FileDoc struct {
 	// since we use FileDoc as immutable data-structures.
 	fullpath string
 
+	// What the index cannot tell from the documents alone, for FileChanged:
+	// this file is a copy, or its destruction ends a move to another
+	// instance. Never stored.
+	copiedFrom *FileRef
+	movedTo    *FileRef
+
 	// NOTE: Do not forget to propagate changes made to this structure to the
 	// structure DirOrFileDoc in model/vfs/vfs.go and client/files.go.
 }
+
+// FileRef names a file on an instance.
+type FileRef struct {
+	ID       string `json:"id"`
+	Instance string `json:"instance,omitempty"`
+}
+
+// MarkCopyOf records that this new file is a copy of another one.
+func (f *FileDoc) MarkCopyOf(ref FileRef) { f.copiedFrom = &ref }
+
+// MarkMovedTo records that destroying this file ends its move to another
+// instance, where it lives as ref.
+func (f *FileDoc) MarkMovedTo(ref FileRef) { f.movedTo = &ref }
+
+// CopiedFrom returns the file this one is a copy of, if marked.
+func (f *FileDoc) CopiedFrom() *FileRef { return f.copiedFrom }
+
+// MovedTo returns where this file has been moved to, if marked.
+func (f *FileDoc) MovedTo() *FileRef { return f.movedTo }
 
 // Antivirus scan status values
 const (
