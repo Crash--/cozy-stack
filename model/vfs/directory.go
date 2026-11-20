@@ -272,6 +272,9 @@ func ModifyDirMetadata(fs VFS, olddoc *DirDoc, patch *DocPatch) (*DirDoc, error)
 	newdoc.CreatedAt = cdate
 	newdoc.UpdatedAt = *patch.UpdatedAt
 	newdoc.ReferencedBy = olddoc.ReferencedBy
+	if newdoc.DocName != olddoc.DocName || newdoc.DirID != olddoc.DirID {
+		newdoc.ReferencedBy = withoutPlacedMagicRefs(olddoc.ReferencedBy)
+	}
 	newdoc.NotSynchronizedOn = olddoc.NotSynchronizedOn
 	newdoc.Metadata = olddoc.Metadata
 	if patch.Metadata != nil {
@@ -286,6 +289,11 @@ func ModifyDirMetadata(fs VFS, olddoc *DirDoc, patch *DocPatch) (*DirDoc, error)
 		return nil, err
 	}
 	return newdoc, nil
+}
+
+// IsInTrash reports whether fullpath is the trash directory or one of its descendants.
+func IsInTrash(fullpath string) bool {
+	return fullpath == TrashDirName || strings.HasPrefix(fullpath, TrashDirName+"/")
 }
 
 // TrashDir is used to delete a directory given its document

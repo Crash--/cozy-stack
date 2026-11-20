@@ -1435,8 +1435,8 @@ func ValidateSharedDrivePermissionPatch(patch permission.Permission) error {
 	if len(patch.Codes) > 0 {
 		return jsonapi.BadRequest(errors.New("codes cannot be modified"))
 	}
-	if patch.Password == nil && patch.ExpiresAt == nil && len(patch.Permissions) == 0 {
-		return jsonapi.BadRequest(errors.New("password, expires_at, or permissions must be provided"))
+	if patch.Password == nil && patch.ExpiresAt == nil && len(patch.Permissions) == 0 && patch.ActivityReportEnabled == nil {
+		return jsonapi.BadRequest(errors.New("password, expires_at, permissions, or activity_report_enabled must be provided"))
 	}
 	if patch.Password != nil {
 		if _, ok := patch.Password.(string); !ok {
@@ -1490,6 +1490,10 @@ func ValidateSharedDrivePermissionSetPatch(
 // ApplySharedDrivePermissionPatch applies password, expires_at, and permission
 // updates for a shared-drive share-by-link permission.
 func ApplySharedDrivePermissionPatch(perm *permission.Permission, patch permission.Permission) error {
+	if patch.ActivityReportEnabled != nil {
+		value := *patch.ActivityReportEnabled
+		perm.ActivityReportEnabled = &value
+	}
 	// Apply password change
 	if patch.Password != nil {
 		pass := patch.Password.(string)
@@ -1670,12 +1674,20 @@ func drivesRoutes(router *echo.Group) {
 
 	// Share-by-link (public link) endpoints for files in shared drives
 	drive.GET("/permissions", proxy(ListSharedDriveShareByLinkPermissions, true))
-	drive.POST("/permissions", proxy(CreateSharedDriveShareByLinkHandler, true))
-	drive.PATCH("/permissions/:perm-id", proxy(PatchSharedDrivePermissionHandler, true))
-	drive.DELETE("/permissions/:perm-id", proxy(RevokeSharedDrivePermission, true))
+	drive.POST("/permissions", proxyLinkMutation(CreateSharedDriveShareByLinkHandler))
+	drive.PATCH("/permissions/:perm-id", proxyLinkMutation(PatchSharedDrivePermissionHandler))
+	drive.DELETE("/permissions/:perm-id", proxyLinkMutation(RevokeSharedDrivePermission))
 }
 
 func proxy(fn func(c echo.Context, inst *instance.Instance, s *sharing.Sharing) error, needsAuth bool) echo.HandlerFunc {
+	return proxyWithLinkMutationGuard(fn, needsAuth, false)
+}
+
+func proxyLinkMutation(fn func(c echo.Context, inst *instance.Instance, s *sharing.Sharing) error) echo.HandlerFunc {
+	return proxyWithLinkMutationGuard(fn, true, true)
+}
+
+func proxyWithLinkMutationGuard(fn func(c echo.Context, inst *instance.Instance, s *sharing.Sharing) error, needsAuth, linkMutation bool) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		inst := middlewares.GetInstance(c)
 		s, err := sharing.FindSharing(inst, c.Param("id"))
@@ -1712,6 +1724,16 @@ func proxy(fn func(c echo.Context, inst *instance.Instance, s *sharing.Sharing) 
 			verb := permission.Verb(method)
 			if err := middlewares.AllowWholeType(c, verb, consts.Files); err != nil {
 				return err
+			}
+		}
+
+		if linkMutation {
+			pdoc, err := middlewares.GetPermission(c)
+			if err != nil {
+				return err
+			}
+			if pdoc.Type == permission.TypeShareByLink || pdoc.Type == permission.TypeSharePreview {
+				return jsonapi.Forbidden(middlewares.ErrForbidden)
 			}
 		}
 
@@ -1763,6 +1785,7 @@ func proxy(fn func(c echo.Context, inst *instance.Instance, s *sharing.Sharing) 
 		director := func(req *http.Request) {
 			req.URL = u
 			req.URL.Path = c.Request().URL.Path
+			req.URL.RawPath = c.Request().URL.RawPath
 			req.URL.RawQuery = c.Request().URL.RawQuery
 			req.Header.Set(echo.HeaderAuthorization, "Bearer "+token)
 			req.Header.Del(echo.HeaderCookie)
@@ -1833,7 +1856,7 @@ func guardSharedDriveRouteForMember(c echo.Context, inst *instance.Instance, s *
 		method = http.MethodGet
 	}
 	verb := permission.Verb(method)
-	reqPath := c.Request().URL.Path
+	route := c.Path()
 	fileID := c.Param("file-id")
 
 	// Only the owner can trash or destroy the root of a shared drive: the VFS
@@ -1848,31 +1871,21 @@ func guardSharedDriveRouteForMember(c echo.Context, inst *instance.Instance, s *
 	// Share-by-link routes keep their own authorization layer. Match the
 	// registered route pattern, not the raw URL, so a future route whose
 	// path contains "/permissions" cannot silently bypass this guard.
-	if strings.HasPrefix(c.Path(), "/sharings/drives/:id/permissions") {
+	if strings.HasPrefix(route, "/sharings/drives/:id/permissions") {
 		return nil
 	}
 	// Open routes (note, office, editor) are checked in the handler by
 	// driveOpenReadOnly: the guard's 403 would leak the existence of a
 	// target outside every scope, where the handler answers 404.
-	if strings.HasSuffix(c.Path(), "/open") {
+	if strings.HasSuffix(route, "/open") {
 		return nil
 	}
 	// Trashed files are outside every sharing scope: the effective access
 	// resolver cannot see them. Restore and destroy are authorized against
 	// the effective write access on the folder the file would be restored
 	// to (which is also where destroy removes it from, logically).
-	if strings.Contains(reqPath, "/trash/") {
-		if shouldCheck, requireWrite := sharedDrivePermissionCheck(method, reqPath); !shouldCheck || !requireWrite {
-			return nil
-		}
-		if err := checkTrashEffectiveAccess(inst, fileID, member); err != nil {
-			return err
-		}
-		// The guard has authorized the request: the handlers skip their VFS
-		// permission check for share-interact tokens (it cannot succeed on a
-		// trashed file, which has lost its referenced_by and whose path is
-		// outside the sharing rules). See files.driveMemberAuthorized.
-		return nil
+	if route == "/sharings/drives/:id/trash/:file-id" {
+		return checkTrashEffectiveAccess(inst, fileID, member)
 	}
 
 	// Write routes without a file target create content at the drive root:
@@ -1882,7 +1895,7 @@ func guardSharedDriveRouteForMember(c echo.Context, inst *instance.Instance, s *
 	// not the dir_id declared in its body; resolve the body dir_id when
 	// limited_access lands.
 	if fileID == "" {
-		if shouldCheck, requireWrite := sharedDrivePermissionCheck(method, reqPath); !shouldCheck || !requireWrite {
+		if shouldCheck, requireWrite := sharedDrivePermissionCheck(method, route); !shouldCheck || !requireWrite {
 			return nil
 		}
 		rootID, err := s.DriveRootID()
@@ -1895,7 +1908,7 @@ func guardSharedDriveRouteForMember(c echo.Context, inst *instance.Instance, s *
 	// Copy needs effective read on the source and effective write on the
 	// destination folder. File-root drives do not support copy: let the
 	// handler answer 422.
-	if method == http.MethodPost && strings.HasSuffix(reqPath, "/copy") {
+	if method == http.MethodPost && route == "/sharings/drives/:id/:file-id/copy" {
 		if s.HasFileDriveRoot() {
 			return nil
 		}

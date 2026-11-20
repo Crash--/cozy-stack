@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -3965,8 +3966,16 @@ func TestFiles(t *testing.T) {
 		// WithURL preserves the encoded slash in the request path.
 		// Resolving a missing folder requires authentication.
 		e.GET("").WithURL(ts.URL + magicPath).Expect().Status(http.StatusUnauthorized)
-		_, err := testInstance.VFS().DirByPath("/Mail")
+		_, err := testInstance.VFS().DirByPath("/Downloads")
 		require.ErrorIs(t, err, os.ErrNotExist)
+
+		// An upgraded instance can already have a referenced Mail folder at the root.
+		mailRef := couchdb.DocReference{Type: consts.Apps, ID: "io.cozy.apps/mail"}
+		otherRef := couchdb.DocReference{Type: consts.PhotosAlbums, ID: "album"}
+		legacy, err := vfs.NewDirDocWithPath("Mail", consts.RootDirID, "/", nil)
+		require.NoError(t, err)
+		legacy.AddReferencedBy(mailRef, otherRef)
+		require.NoError(t, testInstance.VFS().CreateDir(legacy))
 
 		upload := func(name string) *httpexpect.Object {
 			return e.POST("").WithURL(ts.URL+magicPath).
@@ -3980,9 +3989,23 @@ func TestFiles(t *testing.T) {
 				Object()
 		}
 
-		// The first upload creates the folder at the root
+		// The first upload creates the folder and the Downloads folder it lives in
 		dirID := upload("first.txt").Path("$.data.attributes.dir_id").String().NotEmpty().Raw()
 		require.NotEqual(t, "io.cozy.apps/mail", dirID)
+		oldMail, err := testInstance.VFS().DirByPath("/Mail")
+		require.NoError(t, err)
+		assert.Equal(t, legacy.ID(), oldMail.ID())
+		assert.Equal(t, []couchdb.DocReference{otherRef}, oldMail.ReferencedBy)
+
+		// A batch containing a reserved reference must leave the folder untouched.
+		e.POST("/files/"+legacy.ID()+"/relationships/referenced_by").
+			WithHeader("Authorization", "Bearer "+token).
+			WithJSON(echo.Map{"data": []couchdb.DocReference{
+				{Type: consts.PhotosAlbums, ID: "another-album"}, mailRef,
+			}}).Expect().Status(http.StatusBadRequest)
+		oldMail, err = testInstance.VFS().DirByID(legacy.ID())
+		require.NoError(t, err)
+		assert.Equal(t, []couchdb.DocReference{otherRef}, oldMail.ReferencedBy)
 
 		obj := e.GET("").WithURL(ts.URL+magicPath).
 			WithHeader("Authorization", "Bearer "+token).
@@ -3992,7 +4015,27 @@ func TestFiles(t *testing.T) {
 		obj.Path("$.data.id").String().Equal(dirID)
 		attrs := obj.Path("$.data.attributes").Object()
 		attrs.ValueEqual("name", "Mail")
-		attrs.ValueEqual("dir_id", consts.RootDirID)
+		downloads, err := testInstance.VFS().DirByPath("/Downloads")
+		require.NoError(t, err)
+		attrs.ValueEqual("dir_id", downloads.ID())
+		assert.Equal(t, consts.RootDirID, downloads.DirID)
+		assert.Contains(t, downloads.ReferencedBy, couchdb.DocReference{Type: consts.Apps, ID: "io.cozy.apps/downloads"})
+		for _, app := range []struct{ slug, name string }{
+			{"calendar", "Calendar"},
+			{"chat", "Chat"},
+			{"meetings", "Meeting Recordings"},
+		} {
+			t.Run(app.slug, func(t *testing.T) {
+				appPath := "/files/" + url.PathEscape(consts.Apps+"/"+app.slug)
+				attrs := testutils.CreateTestClient(t, ts.URL).GET("").WithURL(ts.URL+appPath).
+					WithHeader("Authorization", "Bearer "+token).
+					Expect().Status(http.StatusOK).
+					JSON(httpexpect.ContentOpts{MediaType: "application/vnd.api+json"}).
+					Object().Path("$.data.attributes").Object()
+				attrs.ValueEqual("name", app.name)
+				attrs.ValueEqual("dir_id", downloads.ID())
+			})
+		}
 		ref := obj.Path("$.data.relationships.referenced_by.data").Array().First().Object()
 		ref.ValueEqual("id", "io.cozy.apps/mail")
 		ref.ValueEqual("type", consts.Apps)
@@ -4027,16 +4070,40 @@ func TestFiles(t *testing.T) {
 		obj.Path("$.data.attributes.size").String().Equal("3")
 		obj.Path("$.data.attributes.files_count").Number().Equal(1)
 
-		// The next uploads reuse the folder, even after it has been renamed
+		// The next uploads reuse the folder
 		upload("second.txt").Path("$.data.attributes.dir_id").String().Equal(dirID)
 
-		e.PATCH("/files/"+dirID).
-			WithHeader("Content-Type", "application/vnd.api+json").
-			WithHeader("Authorization", "Bearer "+token).
-			WithBytes([]byte(`{"data":{"type":"io.cozy.files","id":"` + dirID + `","attributes":{"name":"Attachments"}}}`)).
-			Expect().Status(200)
+		patch := func(id, attributes string) {
+			e.PATCH("/files/"+id).
+				WithHeader("Content-Type", "application/vnd.api+json").
+				WithHeader("Authorization", "Bearer "+token).
+				WithBytes([]byte(`{"data":{"type":"io.cozy.files","id":"` + id + `","attributes":` + attributes + `}}`)).
+				Expect().Status(200)
+		}
+		requireOrdinaryDir := func(id string) {
+			dir, err := testInstance.VFS().DirByID(id)
+			require.NoError(t, err)
+			require.Empty(t, dir.ReferencedBy)
+		}
 
-		upload("third.txt").Path("$.data.attributes.dir_id").String().Equal(dirID)
+		// A renamed or moved folder becomes an ordinary one, and is replaced
+		patch(dirID, `{"name":"Attachments"}`)
+		requireOrdinaryDir(dirID)
+		renamedID := dirID
+		dirID = upload("third.txt").Path("$.data.attributes.dir_id").String().NotEqual(renamedID).Raw()
+
+		patch(dirID, `{"dir_id":"`+renamedID+`"}`)
+		requireOrdinaryDir(dirID)
+		movedID := dirID
+		dirID = upload("moved.txt").Path("$.data.attributes.dir_id").String().NotEqual(movedID).Raw()
+
+		// The same goes for the Downloads folder itself
+		patch(downloads.ID(), `{"name":"Old downloads"}`)
+		requireOrdinaryDir(downloads.ID())
+		dirID = upload("downloads.txt").Path("$.data.attributes.dir_id").String().NotEqual(dirID).Raw()
+		newDownloads, err := testInstance.VFS().DirByPath("/Downloads")
+		require.NoError(t, err)
+		require.NotEqual(t, downloads.ID(), newDownloads.ID())
 
 		// A new Mail folder leaves the trashed one untouched.
 		e.DELETE("/files/"+dirID).
@@ -4304,6 +4371,45 @@ func readFile(fs vfs.VFS, name string) ([]byte, error) {
 	}
 	defer f.Close()
 	return io.ReadAll(f)
+}
+
+// BenchmarkMagicFolderUpload measures saves after the target directories exist.
+func BenchmarkMagicFolderUpload(b *testing.B) {
+	require.NoError(b, config.LoadTestFile())
+	require.NoError(b, loadLocale())
+	config.GetConfig().Fs.URL = &url.URL{Scheme: "file", Path: b.TempDir()}
+	for _, target := range []struct {
+		name, slug string
+		concrete   bool
+	}{
+		{"ConcreteMailID", "mail", true},
+		{"NotesMagicID", consts.NotesSlug, false},
+		{"MailMagicID", "mail", false},
+	} {
+		b.Run(target.name, func(b *testing.B) {
+			setup := testutils.NewSetup(b, b.Name())
+			inst := setup.GetTestInstance()
+			_, token := setup.GetTestClient(consts.Files)
+			server := setup.GetTestServer("/files", Routes)
+			id := consts.Apps + "/" + target.slug
+			dirID, err := inst.ResolveDirID(id)
+			require.NoError(b, err)
+			if target.concrete {
+				id = dirID
+			}
+			prefix := "/files/" + url.PathEscape(id) + "?Type=file&Name="
+			for i := 0; b.Loop(); i++ {
+				req := httptest.NewRequest(http.MethodPost, prefix+strconv.Itoa(i)+".txt", strings.NewReader("mail"))
+				req.Header.Set("Authorization", "Bearer "+token)
+				req.Header.Set("Content-Type", "text/plain")
+				res := httptest.NewRecorder()
+				server.Config.Handler.ServeHTTP(res, req)
+				if res.Code != http.StatusCreated {
+					b.Fatalf("upload returned %d: %s", res.Code, res.Body.String())
+				}
+			}
+		})
+	}
 }
 
 func loadLocale() error {

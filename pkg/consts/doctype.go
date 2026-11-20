@@ -43,6 +43,8 @@ const (
 	// FilesRecents doc type for the files and directories recently opened or
 	// edited by the user
 	FilesRecents = "io.cozy.files.recents"
+	// FilesUploads doc type for the state of the resumable uploads in progress
+	FilesUploads = "io.cozy.files.uploads"
 	// Thumbnails is a synthetic doctype for thumbnails, used for realtime
 	// events
 	Thumbnails = "io.cozy.files.thumbnails"
@@ -75,6 +77,8 @@ const (
 	Permissions = "io.cozy.permissions"
 	// PublicLinkEvents stores private activity on public links.
 	PublicLinkEvents = "io.cozy.public_links.events"
+	// PublicLinkReports stores private expiration report checkpoints.
+	PublicLinkReports = "io.cozy.public_links.reports"
 	// Contacts doc type for sharing
 	Contacts = "io.cozy.contacts"
 	// Groups of contacts doc type for sharing

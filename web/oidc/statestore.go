@@ -16,7 +16,7 @@ import (
 
 const (
 	stateTTL = 15 * time.Minute
-	codeTTL  = 3 * time.Hour
+	codeTTL  = 10 * time.Minute
 )
 
 type stateHolder struct {
@@ -73,42 +73,95 @@ type stateStorage interface {
 	Find(id string) *stateHolder
 	CreateCodeData(sub, sessionID, contextName string, provider oidcprovider.Kind) string
 	GetCodeData(code string) *DelegatedCodeData
+	DeleteCodeData(code string) bool
+}
+
+type delegatedCodeEntry struct {
+	data      *DelegatedCodeData
+	expiresAt time.Time
 }
 
 type memStateStorage struct {
+	mu     sync.Mutex
+	now    func() time.Time
 	states map[string]*stateHolder
-	codes  map[string]*DelegatedCodeData // delegated code -> code data
+	codes  map[string]delegatedCodeEntry
 }
 
-func (store memStateStorage) Add(state *stateHolder) error {
-	state.expiresAt = time.Now().UTC().Add(stateTTL).Unix()
+func newMemStateStorage() *memStateStorage {
+	return &memStateStorage{
+		now:    time.Now,
+		states: make(map[string]*stateHolder),
+		codes:  make(map[string]delegatedCodeEntry),
+	}
+}
+
+func (store *memStateStorage) Add(state *stateHolder) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	state.expiresAt = store.now().UTC().Add(stateTTL).Unix()
 	store.states[state.id] = state
 	return nil
 }
 
-func (store memStateStorage) Find(id string) *stateHolder {
+func (store *memStateStorage) Find(id string) *stateHolder {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	state, ok := store.states[id]
 	if !ok {
 		return nil
 	}
-	if state.expiresAt < time.Now().UTC().Unix() {
+	if state.expiresAt < store.now().UTC().Unix() {
 		delete(store.states, id)
 		return nil
 	}
 	return state
 }
 
-func (store memStateStorage) CreateCodeData(sub, sessionID, contextName string, provider oidcprovider.Kind) string {
+func (store *memStateStorage) CreateCodeData(sub, sessionID, contextName string, provider oidcprovider.Kind) string {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	code := makeCode()
-	store.codes[code] = &DelegatedCodeData{Sub: sub, SessionID: sessionID, ContextName: contextName, Provider: provider}
+	store.codes[code] = delegatedCodeEntry{
+		data:      &DelegatedCodeData{Sub: sub, SessionID: sessionID, ContextName: contextName, Provider: provider},
+		expiresAt: store.now().Add(codeTTL),
+	}
 	return code
 }
 
-func (store memStateStorage) GetCodeData(code string) *DelegatedCodeData {
-	return store.codes[code]
+// liveCode must be called with the lock held.
+func (store *memStateStorage) liveCode(code string) (delegatedCodeEntry, bool) {
+	entry, ok := store.codes[code]
+	if !ok {
+		return entry, false
+	}
+	if !store.now().Before(entry.expiresAt) {
+		delete(store.codes, code)
+		return entry, false
+	}
+	return entry, true
+}
+
+func (store *memStateStorage) GetCodeData(code string) *DelegatedCodeData {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	entry, ok := store.liveCode(code)
+	if !ok {
+		return nil
+	}
+	return entry.data
+}
+
+func (store *memStateStorage) DeleteCodeData(code string) bool {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	_, ok := store.liveCode(code)
+	delete(store.codes, code)
+	return ok
 }
 
 type subRedisInterface interface {
+	Del(ctx context.Context, keys ...string) *redis.IntCmd
 	Get(ctx context.Context, key string) *redis.StringCmd
 	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd
 }
@@ -164,6 +217,11 @@ func (store *redisStateStorage) GetCodeData(code string) *DelegatedCodeData {
 	return &data
 }
 
+// DeleteCodeData reports whether this call is the one that removed the code.
+func (store *redisStateStorage) DeleteCodeData(code string) bool {
+	return store.cl.Del(store.ctx, code).Val() > 0
+}
+
 var globalStorage stateStorage
 var globalStorageMutex sync.Mutex
 
@@ -175,10 +233,7 @@ func getStorage() stateStorage {
 	}
 	cli := config.GetConfig().OauthStateStorage
 	if cli == nil {
-		globalStorage = &memStateStorage{
-			states: make(map[string]*stateHolder),
-			codes:  make(map[string]*DelegatedCodeData),
-		}
+		globalStorage = newMemStateStorage()
 	} else {
 		ctx := context.Background()
 		globalStorage = &redisStateStorage{cl: cli, ctx: ctx}

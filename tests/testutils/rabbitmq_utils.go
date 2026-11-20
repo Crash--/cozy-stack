@@ -53,11 +53,6 @@ func StartRabbitMQ(t *testing.T, withVolume bool, enableTLS bool) *RabbitFixture
 		}
 		if enableTLS {
 			hc.PortBindings["5671/tcp"] = []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: amqpsHostPort}}
-
-			hc.Binds = append(hc.Binds,
-				fmt.Sprintf("%s:/etc/rabbitmq/rabbitmq.conf", filepath.Join(certRoot(), "rabbitmq.conf")),
-				fmt.Sprintf("%s:/etc/rabbitmq/certs", certRoot()),
-			)
 		}
 		if withVolume {
 			hc.Binds = append(hc.Binds, fmt.Sprintf("%s:/var/lib/rabbitmq/mnesia", volName))
@@ -85,6 +80,16 @@ func StartRabbitMQ(t *testing.T, withVolume bool, enableTLS bool) *RabbitFixture
 		}(),
 	}
 
+	if enableTLS {
+		for _, name := range []string{"rabbitmq.conf", "ca.pem", "server.crt", "server.key"} {
+			req.Files = append(req.Files, tc.ContainerFile{
+				HostFilePath:      filepath.Join(certRoot(), name),
+				ContainerFilePath: "/etc/rabbitmq/" + name,
+				FileMode:          0o644,
+			})
+		}
+	}
+
 	var container tc.Container
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -103,7 +108,7 @@ func StartRabbitMQ(t *testing.T, withVolume bool, enableTLS bool) *RabbitFixture
 		if container != nil {
 			_ = container.Terminate(context.Background())
 		}
-		if !strings.Contains(err.Error(), "port is already allocated") {
+		if !isPortBindingError(err.Error()) {
 			break
 		}
 	}
@@ -141,6 +146,11 @@ func StartRabbitMQ(t *testing.T, withVolume bool, enableTLS bool) *RabbitFixture
 
 	fixture.waitForAMQP(60 * time.Second)
 	return fixture
+}
+
+func isPortBindingError(message string) bool {
+	return strings.Contains(message, "port is already allocated") ||
+		strings.Contains(message, "address already in use")
 }
 
 func (f *RabbitFixture) Restart(ctx context.Context, timeout time.Duration) {
@@ -287,5 +297,5 @@ func getFreePort(t *testing.T) string {
 func certRoot() string {
 	_, thisFile, _, _ := runtime.Caller(0)
 	testDir := filepath.Dir(thisFile)
-	return filepath.Join(testDir, "testdata")
+	return filepath.Join(testDir, "..", "..", "pkg", "rabbitmq", "testdata")
 }

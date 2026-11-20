@@ -1100,6 +1100,13 @@ func AccessToken(c echo.Context) error {
 			"error": "invalid scope",
 		})
 	}
+	// The code is consumed only once the request can succeed, as the two
+	// factor step and a refused scope let the client retry with the same code.
+	if reqBody.Code != "" && !getStorage().DeleteCodeData(reqBody.Code) {
+		return c.JSON(http.StatusBadRequest, echo.Map{
+			"error": invalidDelegatedCode,
+		})
+	}
 	if out.Scope == "*" {
 		if !client.Flagship {
 			return auth.ReturnSessionCode(c, http.StatusAccepted, inst, auth.SessionCodeSourcePassword)
@@ -1379,7 +1386,7 @@ func getUserInfo(conf *Config, token string) (map[string]interface{}, error) {
 }
 
 func checkIDToken(conf *Config, inst *instance.Instance, idToken string) error {
-	claims, err := oidcprovider.VerifyIDToken(idToken, conf)
+	claims, err := oidcprovider.VerifyIDTokenForClient(idToken, inst.ContextName, conf)
 	if err != nil {
 		logger.WithNamespace("oidc").Errorf("Error on VerifyIDToken: %s", err)
 		return ErrInvalidToken

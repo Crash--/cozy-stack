@@ -14,6 +14,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/cozy/cozy-stack/model/vfs"
 	"github.com/cozy/cozy-stack/pkg/config/config"
@@ -25,6 +26,22 @@ import (
 	"github.com/gofrs/uuid/v5"
 	"github.com/minio/minio-go/v7"
 )
+
+// s3CallTimeout bounds the wait for an S3 response. It stays below
+// lock.LockTimeout so that a frozen S3 gives the VFS lock back before the
+// requests waiting for it give up.
+var s3CallTimeout = 10 * time.Second
+
+// The slowest rates, in bytes per second, accepted for the transfers made with
+// the VFS lock held. A copy stays inside S3, an upload follows its source.
+const (
+	s3MinCopyRate   = 4 << 20
+	s3MinUploadRate = 128 << 10
+)
+
+func transferTimeout(size, rate int64) time.Duration {
+	return s3CallTimeout + time.Duration(max(size, 0)/rate)*time.Second
+}
 
 type s3VFS struct {
 	vfs.Indexer
@@ -174,7 +191,7 @@ type putResult struct {
 	err  error
 }
 
-func (sfs *s3VFS) CreateFile(newdoc, olddoc *vfs.FileDoc, opts ...vfs.CreateOptions) (vfs.File, error) {
+func (sfs *s3VFS) CreateFile(newdoc, olddoc *vfs.FileDoc, opts ...vfs.CreateOptions) (vfs.FileUpload, error) {
 	if lockerr := sfs.mu.Lock(); lockerr != nil {
 		return nil, lockerr
 	}
@@ -251,18 +268,19 @@ func (sfs *s3VFS) CreateFile(newdoc, olddoc *vfs.FileDoc, opts ...vfs.CreateOpti
 	extractor := vfs.NewMetaExtractor(newdoc)
 
 	return &s3FileCreation{
-		fs:       sfs,
-		pw:       pw,
-		resultCh: resultCh,
-		newdoc:   newdoc,
-		olddoc:   olddoc,
-		objKey:   objKey,
-		w:        0,
-		size:     newsize,
-		maxsize:  maxsize,
-		capsize:  capsize,
-		meta:     extractor,
-		md5H:     md5.New(),
+		fs:         sfs,
+		pw:         pw,
+		resultCh:   resultCh,
+		newdoc:     newdoc,
+		olddoc:     olddoc,
+		objKey:     objKey,
+		allowTrash: vfs.OptionsAllowCreationInTrash(opts),
+		w:          0,
+		size:       newsize,
+		maxsize:    maxsize,
+		capsize:    capsize,
+		meta:       extractor,
+		md5H:       md5.New(),
 	}, nil
 }
 
@@ -295,14 +313,11 @@ func (sfs *s3VFS) CopyFile(olddoc, newdoc *vfs.FileDoc) error {
 	srcKey := MakeObjectKey(sfs.keyPrefix, olddoc.DocID, olddoc.InternalID)
 	dstKey := MakeObjectKey(sfs.keyPrefix, newdoc.DocID, newdoc.InternalID)
 
-	if _, err := sfs.client.CopyObject(sfs.ctx,
-		minio.CopyDestOptions{Bucket: sfs.bucket, Object: dstKey},
-		minio.CopySrcOptions{Bucket: sfs.bucket, Object: srcKey},
-	); err != nil {
+	if err := sfs.copyObject(sfs.bucket, srcKey, dstKey, olddoc.ByteSize); err != nil {
 		return err
 	}
 	if err := sfs.Indexer.CreateNamedFileDoc(newdoc); err != nil {
-		_ = sfs.client.RemoveObject(sfs.ctx, sfs.bucket, dstKey, minio.RemoveObjectOptions{})
+		_ = sfs.removeObject(dstKey)
 		return err
 	}
 
@@ -338,14 +353,11 @@ func (sfs *s3VFS) DissociateFile(src, dst *vfs.FileDoc) error {
 	srcKey := MakeObjectKey(sfs.keyPrefix, src.DocID, src.InternalID)
 	dstKey := MakeObjectKey(sfs.keyPrefix, dst.DocID, dst.InternalID)
 
-	if _, err := sfs.client.CopyObject(sfs.ctx,
-		minio.CopyDestOptions{Bucket: sfs.bucket, Object: dstKey},
-		minio.CopySrcOptions{Bucket: sfs.bucket, Object: srcKey},
-	); err != nil {
+	if err := sfs.copyObject(sfs.bucket, srcKey, dstKey, src.ByteSize); err != nil {
 		return err
 	}
 	if err := sfs.Indexer.CreateNamedFileDoc(dst); err != nil {
-		_ = sfs.client.RemoveObject(sfs.ctx, sfs.bucket, dstKey, minio.RemoveObjectOptions{})
+		_ = sfs.removeObject(dstKey)
 		return err
 	}
 
@@ -441,7 +453,7 @@ func (sfs *s3VFS) destroyFileLocked(doc *vfs.FileDoc) error {
 			sfs.log.Warnf("DestroyFile failed on BatchDeleteVersions: %s", err)
 		}
 	}
-	if err := s3util.DeleteObjects(sfs.ctx, sfs.client, sfs.bucket, objNames); err != nil {
+	if err := sfs.deleteObjects(objNames); err != nil {
 		sfs.log.Warnf("DestroyFile failed on deleteObjects: %s", err)
 	}
 	vfs.DiskQuotaAfterDestroy(sfs, diskUsage, destroyed)
@@ -477,7 +489,7 @@ func (sfs *s3VFS) EnsureErased(journal vfs.TrashJournal) error {
 		sfs.log.Warnf("EnsureErased failed on BatchDeleteVersions: %s", err)
 		errm = errors.Join(errm, err)
 	}
-	if err := s3util.DeleteObjects(sfs.ctx, sfs.client, sfs.bucket, objNames); err != nil {
+	if err := sfs.deleteObjects(objNames); err != nil {
 		sfs.log.Warnf("EnsureErased failed on deleteObjects: %s", err)
 		errm = errors.Join(errm, err)
 	}
@@ -485,25 +497,59 @@ func (sfs *s3VFS) EnsureErased(journal vfs.TrashJournal) error {
 	return errm
 }
 
-func (sfs *s3VFS) OpenFile(doc *vfs.FileDoc) (vfs.File, error) {
-	if lockerr := sfs.mu.RLock(); lockerr != nil {
-		return nil, lockerr
+func (sfs *s3VFS) copyObject(srcBucket, srcKey, dstKey string, size int64) error {
+	ctx, cancel := context.WithTimeout(sfs.ctx, transferTimeout(size, s3MinCopyRate))
+	defer cancel()
+	_, err := sfs.client.CopyObject(ctx,
+		minio.CopyDestOptions{Bucket: sfs.bucket, Object: dstKey},
+		minio.CopySrcOptions{Bucket: srcBucket, Object: srcKey},
+	)
+	return err
+}
+
+func (sfs *s3VFS) removeObject(objKey string) error {
+	ctx, cancel := context.WithTimeout(sfs.ctx, s3CallTimeout)
+	defer cancel()
+	return sfs.client.RemoveObject(ctx, sfs.bucket, objKey, minio.RemoveObjectOptions{})
+}
+
+func (sfs *s3VFS) deleteObjects(objNames []string) error {
+	// The keys are sent by batches of 1000.
+	ctx, cancel := context.WithTimeout(sfs.ctx, time.Duration(1+len(objNames)/1000)*s3CallTimeout)
+	defer cancel()
+	return s3util.DeleteObjects(ctx, sfs.client, sfs.bucket, objNames)
+}
+
+// openObject bounds only the wait for the first response: reading a big file
+// can take longer.
+func (sfs *s3VFS) openObject(objKey string) (vfs.File, error) {
+	ctx, cancel := context.WithCancel(sfs.ctx)
+	timer := time.AfterFunc(s3CallTimeout, cancel)
+	obj, err := sfs.client.GetObject(ctx, sfs.bucket, objKey, minio.GetObjectOptions{})
+	if err == nil {
+		if _, err = obj.Stat(); err == nil && !timer.Stop() {
+			err = context.DeadlineExceeded
+		}
+		if err != nil {
+			_ = obj.Close()
+		}
 	}
-	defer sfs.mu.RUnlock()
-	objKey := MakeObjectKey(sfs.keyPrefix, doc.DocID, doc.InternalID)
-	obj, err := sfs.client.GetObject(sfs.ctx, sfs.bucket, objKey, minio.GetObjectOptions{})
 	if err != nil {
-		return nil, err
-	}
-	// Stat the object to detect if it exists.
-	if _, err := obj.Stat(); err != nil {
-		_ = obj.Close()
+		cancel()
 		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
 			return nil, os.ErrNotExist
 		}
 		return nil, err
 	}
-	return &s3FileOpen{obj}, nil
+	return &s3FileOpen{obj, cancel}, nil
+}
+
+func (sfs *s3VFS) OpenFile(doc *vfs.FileDoc) (vfs.File, error) {
+	if lockerr := sfs.mu.RLock(); lockerr != nil {
+		return nil, lockerr
+	}
+	defer sfs.mu.RUnlock()
+	return sfs.openObject(MakeObjectKey(sfs.keyPrefix, doc.DocID, doc.InternalID))
 }
 
 func (sfs *s3VFS) OpenFileVersion(doc *vfs.FileDoc, version *vfs.Version) (vfs.File, error) {
@@ -515,19 +561,7 @@ func (sfs *s3VFS) OpenFileVersion(doc *vfs.FileDoc, version *vfs.Version) (vfs.F
 	if parts := strings.SplitN(version.DocID, "/", 2); len(parts) > 1 {
 		internalID = parts[1]
 	}
-	objKey := MakeObjectKey(sfs.keyPrefix, doc.DocID, internalID)
-	obj, err := sfs.client.GetObject(sfs.ctx, sfs.bucket, objKey, minio.GetObjectOptions{})
-	if err != nil {
-		return nil, err
-	}
-	if _, err := obj.Stat(); err != nil {
-		_ = obj.Close()
-		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
-			return nil, os.ErrNotExist
-		}
-		return nil, err
-	}
-	return &s3FileOpen{obj}, nil
+	return sfs.openObject(MakeObjectKey(sfs.keyPrefix, doc.DocID, internalID))
 }
 
 func (sfs *s3VFS) ImportFileVersion(version *vfs.Version, content io.ReadCloser) error {
@@ -553,7 +587,9 @@ func (sfs *s3VFS) ImportFileVersion(version *vfs.Version, content io.ReadCloser)
 	}
 	objKey := MakeObjectKey(sfs.keyPrefix, parts[0], parts[1])
 
-	_, err := sfs.client.PutObject(sfs.ctx, sfs.bucket, objKey, content, version.ByteSize, minio.PutObjectOptions{
+	ctx, cancel := context.WithTimeout(sfs.ctx, transferTimeout(version.ByteSize, s3MinUploadRate))
+	defer cancel()
+	_, err := sfs.client.PutObject(ctx, sfs.bucket, objKey, content, version.ByteSize, minio.PutObjectOptions{
 		ContentType:    "application/octet-stream",
 		SendContentMd5: true,
 	})
@@ -586,7 +622,9 @@ func (sfs *s3VFS) WriteContentAt(docID, internalID string, content io.Reader, si
 // the target before flipping the instance's backend flag.
 func (sfs *s3VFS) StatContentAt(docID, internalID string) (int64, error) {
 	objKey := MakeObjectKey(sfs.keyPrefix, docID, internalID)
-	info, err := sfs.client.StatObject(sfs.ctx, sfs.bucket, objKey, minio.StatObjectOptions{})
+	ctx, cancel := context.WithTimeout(sfs.ctx, s3CallTimeout)
+	defer cancel()
+	info, err := sfs.client.StatObject(ctx, sfs.bucket, objKey, minio.StatObjectOptions{})
 	if err != nil {
 		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
 			return 0, os.ErrNotExist
@@ -637,7 +675,7 @@ func (sfs *s3VFS) cleanOldVersion(fileID string, v *vfs.Version) error {
 		internalID = parts[1]
 	}
 	objKey := MakeObjectKey(sfs.keyPrefix, fileID, internalID)
-	return sfs.client.RemoveObject(sfs.ctx, sfs.bucket, objKey, minio.RemoveObjectOptions{})
+	return sfs.removeObject(objKey)
 }
 
 func (sfs *s3VFS) ClearOldVersions() error {
@@ -662,7 +700,7 @@ func (sfs *s3VFS) ClearOldVersions() error {
 		return err
 	}
 	vfs.DiskQuotaAfterDestroy(sfs, diskUsage, destroyed)
-	return s3util.DeleteObjects(sfs.ctx, sfs.client, sfs.bucket, objNames)
+	return sfs.deleteObjects(objNames)
 }
 
 func (sfs *s3VFS) CopyFileFromOtherFS(
@@ -714,10 +752,7 @@ func (sfs *s3VFS) CopyFileFromOtherFS(
 	// Try server-side copy if the source is also an s3VFS on the same client.
 	if srcS3, ok := srcFS.(*s3VFS); ok && srcS3.client == sfs.client {
 		srcKey := MakeObjectKey(srcS3.keyPrefix, srcDoc.DocID, srcDoc.InternalID)
-		if _, err := sfs.client.CopyObject(sfs.ctx,
-			minio.CopyDestOptions{Bucket: sfs.bucket, Object: dstKey},
-			minio.CopySrcOptions{Bucket: srcS3.bucket, Object: srcKey},
-		); err != nil {
+		if err := sfs.copyObject(srcS3.bucket, srcKey, dstKey, srcDoc.ByteSize); err != nil {
 			return err
 		}
 	} else {
@@ -726,9 +761,11 @@ func (sfs *s3VFS) CopyFileFromOtherFS(
 		if err != nil {
 			return err
 		}
-		_, err = sfs.client.PutObject(sfs.ctx, sfs.bucket, dstKey, srcFile, srcDoc.ByteSize, minio.PutObjectOptions{
+		ctx, cancel := context.WithTimeout(sfs.ctx, transferTimeout(srcDoc.ByteSize, s3MinUploadRate))
+		_, err = sfs.client.PutObject(ctx, sfs.bucket, dstKey, srcFile, srcDoc.ByteSize, minio.PutObjectOptions{
 			ContentType: srcDoc.Mime,
 		})
+		cancel()
 		if errc := srcFile.Close(); err == nil {
 			err = errc
 		}
@@ -764,7 +801,7 @@ func (sfs *s3VFS) CopyFileFromOtherFS(
 				internalID = parts[1]
 			}
 			objKey := MakeObjectKey(sfs.keyPrefix, newdoc.DocID, internalID)
-			_ = sfs.client.RemoveObject(sfs.ctx, sfs.bucket, objKey, minio.RemoveObjectOptions{})
+			_ = sfs.removeObject(objKey)
 		}
 		for _, old := range toClean {
 			_ = sfs.cleanOldVersion(newdoc.DocID, old)
@@ -887,19 +924,20 @@ func (sfs *s3VFS) DirOrFileByPath(name string) (*vfs.DirDoc, *vfs.FileDoc, error
 // s3FileCreation represents a file open for writing. It is used to create
 // a file or to modify the content of a file.
 type s3FileCreation struct {
-	fs       *s3VFS
-	pw       *io.PipeWriter
-	resultCh chan putResult
-	newdoc   *vfs.FileDoc
-	olddoc   *vfs.FileDoc
-	objKey   string
-	w        int64
-	size     int64
-	maxsize  int64
-	capsize  int64
-	meta     *vfs.MetaExtractor
-	md5H     hash.Hash
-	err      error
+	fs         *s3VFS
+	pw         *io.PipeWriter
+	resultCh   chan putResult
+	newdoc     *vfs.FileDoc
+	olddoc     *vfs.FileDoc
+	objKey     string
+	allowTrash bool
+	w          int64
+	size       int64
+	maxsize    int64
+	capsize    int64
+	meta       *vfs.MetaExtractor
+	md5H       hash.Hash
+	err        error
 }
 
 func (f *s3FileCreation) Read(p []byte) (int, error) {
@@ -958,11 +996,20 @@ func (f *s3FileCreation) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+func (f *s3FileCreation) Abort() error {
+	if f.meta != nil {
+		(*f.meta).Abort(vfs.ErrContentLengthMismatch)
+	}
+	_ = f.pw.CloseWithError(vfs.ErrContentLengthMismatch)
+	<-f.resultCh
+	return f.fs.removeObject(f.objKey)
+}
+
 func (f *s3FileCreation) Close() (err error) {
 	defer func() {
 		if err != nil {
 			// Remove the object from S3 if an error occurred
-			_ = f.fs.client.RemoveObject(f.fs.ctx, f.fs.bucket, f.objKey, minio.RemoveObjectOptions{})
+			_ = f.fs.removeObject(f.objKey)
 			// If an error has occurred when creating a new file, we should
 			// also delete the file from the index.
 			if f.olddoc == nil {
@@ -1028,16 +1075,26 @@ func (f *s3FileCreation) Close() (err error) {
 		return vfs.ErrContentLengthMismatch
 	}
 
-	lockerr := f.fs.mu.Lock()
-	if lockerr != nil {
+	return f.fs.commitFile(newdoc, olddoc, f.size, f.capsize, f.allowTrash, nil)
+}
+
+// commitFile adds a file, whose content is already in its object, to the
+// index. check, when given, runs with the lock of the VFS held.
+func (sfs *s3VFS) commitFile(newdoc, olddoc *vfs.FileDoc, size, capsize int64, allowTrash bool, check func() error) error {
+	if lockerr := sfs.mu.Lock(); lockerr != nil {
 		return lockerr
 	}
-	defer f.fs.mu.Unlock()
+	defer sfs.mu.Unlock()
+	if check != nil {
+		if err := check(); err != nil {
+			return err
+		}
+	}
 
 	// Check again that a file with the same path does not exist. It can happen
 	// when the same file is uploaded twice in parallel.
 	if olddoc == nil {
-		exists, err := f.fs.Indexer.DirChildExists(newdoc.DirID, newdoc.DocName)
+		exists, err := sfs.Indexer.DirChildExists(newdoc.DirID, newdoc.DocName)
 		if err != nil {
 			return err
 		}
@@ -1046,33 +1103,35 @@ func (f *s3FileCreation) Close() (err error) {
 		}
 	}
 
-	var newpath string
-	newpath, err = f.fs.Indexer.FilePath(newdoc)
+	newpath, err := sfs.Indexer.FilePath(newdoc)
 	if err != nil {
 		return err
 	}
 	newdoc.Trashed = strings.HasPrefix(newpath, vfs.TrashDirName+"/")
+	if olddoc == nil && newdoc.Trashed && !allowTrash {
+		return vfs.ErrParentInTrash
+	}
 
 	var v *vfs.Version
 	if olddoc != nil {
 		v = vfs.NewVersion(olddoc)
-		err = f.fs.Indexer.UpdateFileDoc(olddoc, newdoc)
+		err = sfs.Indexer.UpdateFileDoc(olddoc, newdoc)
 	} else if newdoc.ID() == "" {
-		err = f.fs.Indexer.CreateFileDoc(newdoc)
+		err = sfs.Indexer.CreateFileDoc(newdoc)
 	} else {
-		err = f.fs.Indexer.CreateNamedFileDoc(newdoc)
+		err = sfs.Indexer.CreateNamedFileDoc(newdoc)
 	}
 	if err != nil {
 		return err
 	}
 
 	if v != nil {
-		actionV, toClean, _ := vfs.FindVersionsToClean(f.fs, newdoc.DocID, v)
+		actionV, toClean, _ := vfs.FindVersionsToClean(sfs, newdoc.DocID, v)
 		if bytes.Equal(newdoc.MD5Sum, olddoc.MD5Sum) {
 			actionV = vfs.CleanCandidateVersion
 		}
 		if actionV == vfs.KeepCandidateVersion {
-			if errv := f.fs.Indexer.CreateVersion(v); errv != nil {
+			if errv := sfs.Indexer.CreateVersion(v); errv != nil {
 				actionV = vfs.CleanCandidateVersion
 			}
 		}
@@ -1081,20 +1140,20 @@ func (f *s3FileCreation) Close() (err error) {
 			if parts := strings.SplitN(v.DocID, "/", 2); len(parts) > 1 {
 				internalID = parts[1]
 			}
-			objKey := MakeObjectKey(f.fs.keyPrefix, newdoc.DocID, internalID)
-			if err := f.fs.client.RemoveObject(f.fs.ctx, f.fs.bucket, objKey, minio.RemoveObjectOptions{}); err != nil {
-				f.fs.log.Warnf("Could not delete previous version %q: %s", objKey, err.Error())
+			objKey := MakeObjectKey(sfs.keyPrefix, newdoc.DocID, internalID)
+			if err := sfs.removeObject(objKey); err != nil {
+				sfs.log.Warnf("Could not delete previous version %q: %s", objKey, err.Error())
 			}
 		}
 		for _, old := range toClean {
-			if err := f.fs.cleanOldVersion(newdoc.DocID, old); err != nil {
-				f.fs.log.Warnf("Could not delete old versions for %s: %s", newdoc.DocID, err.Error())
+			if err := sfs.cleanOldVersion(newdoc.DocID, old); err != nil {
+				sfs.log.Warnf("Could not delete old versions for %s: %s", newdoc.DocID, err.Error())
 			}
 		}
 	}
 
-	if f.capsize > 0 && f.size >= f.capsize {
-		vfs.PushDiskQuotaAlert(f.fs, true)
+	if capsize > 0 && size >= capsize {
+		vfs.PushDiskQuotaAlert(sfs, true)
 	}
 
 	return nil
@@ -1102,7 +1161,8 @@ func (f *s3FileCreation) Close() (err error) {
 
 // s3FileOpen represents a file open for reading.
 type s3FileOpen struct {
-	obj *minio.Object
+	obj    *minio.Object
+	cancel context.CancelFunc
 }
 
 func (f *s3FileOpen) Read(p []byte) (int, error) {
@@ -1122,6 +1182,7 @@ func (f *s3FileOpen) Write(p []byte) (int, error) {
 }
 
 func (f *s3FileOpen) Close() error {
+	defer f.cancel()
 	return f.obj.Close()
 }
 

@@ -86,7 +86,7 @@ func Callback(inst *instance.Instance, params CallbackParameters) error {
 
 func checkToken(cfg *config.Office, params CallbackParameters) error {
 	if cfg == nil || cfg.OutboxSecret == "" {
-		return nil
+		return ErrNoServer
 	}
 
 	var claims callbackClaims
@@ -129,6 +129,11 @@ func forceSaveFile(inst *instance.Instance, key, downloadURL string) error {
 
 	updated, err := saveFile(inst, *detector, downloadURL)
 	if err == nil {
+		if updated.ID != detector.ID {
+			// The file has changed during the session and the document went
+			// to a conflict copy: the next saves go to that copy too.
+			_ = GetStore().UpdateSecret(inst, key, detector.ID, updated.ID)
+		}
 		_ = GetStore().UpdateDoc(inst, key, *updated)
 		recordSaveActivity(inst, updated.ID, sessionParticipants(inst, key))
 	}

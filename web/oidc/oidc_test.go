@@ -11,6 +11,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,17 +39,99 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// delegatedCodeRedis expires keys like Redis does, on the clock of the test
+// when now is set.
 type delegatedCodeRedis struct {
-	values map[string]string
+	values    map[string]string
+	deadlines map[string]time.Time
+	now       func() time.Time
+}
+
+func (r *delegatedCodeRedis) expired(key string) bool {
+	deadline, ok := r.deadlines[key]
+	return ok && r.now != nil && !r.now().Before(deadline)
 }
 
 func (r *delegatedCodeRedis) Get(_ context.Context, key string) *redis.StringCmd {
+	if r.expired(key) {
+		return redis.NewStringResult("", redis.Nil)
+	}
 	return redis.NewStringResult(r.values[key], nil)
 }
 
-func (r *delegatedCodeRedis) Set(_ context.Context, key string, value interface{}, _ time.Duration) *redis.StatusCmd {
+func (r *delegatedCodeRedis) Set(_ context.Context, key string, value interface{}, ttl time.Duration) *redis.StatusCmd {
 	r.values[key] = string(value.([]byte))
+	if r.now != nil && ttl > 0 {
+		if r.deadlines == nil {
+			r.deadlines = make(map[string]time.Time)
+		}
+		r.deadlines[key] = r.now().Add(ttl)
+	}
 	return redis.NewStatusResult("OK", nil)
+}
+
+func (r *delegatedCodeRedis) Del(_ context.Context, keys ...string) *redis.IntCmd {
+	var n int64
+	for _, key := range keys {
+		if _, ok := r.values[key]; ok && !r.expired(key) {
+			n++
+		}
+		delete(r.values, key)
+	}
+	return redis.NewIntResult(n, nil)
+}
+
+func TestDelegatedCodeIsSingleUseAndShortLived(t *testing.T) {
+	config.UseTestFile(t)
+
+	for _, name := range []string{"memory", "redis"} {
+		t.Run(name, func(t *testing.T) {
+			now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+			clock := func() time.Time { return now }
+			var store stateStorage
+			if name == "memory" {
+				mem := newMemStateStorage()
+				mem.now = clock
+				store = mem
+			} else {
+				mock := &delegatedCodeRedis{values: make(map[string]string), now: clock}
+				store = &redisStateStorage{cl: mock, ctx: context.Background()}
+			}
+
+			code := store.CreateCodeData("sub", "sid", "ctx", oidcprovider.GenericProvider)
+			require.True(t, store.DeleteCodeData(code))
+			require.False(t, store.DeleteCodeData(code))
+			require.Nil(t, store.GetCodeData(code))
+
+			code = store.CreateCodeData("sub", "sid", "ctx", oidcprovider.GenericProvider)
+			now = now.Add(10*time.Minute - time.Second)
+			require.NotNil(t, store.GetCodeData(code))
+			now = now.Add(time.Second)
+			require.Nil(t, store.GetCodeData(code))
+			require.False(t, store.DeleteCodeData(code))
+		})
+	}
+}
+
+func TestDelegatedCodeIsConsumedOnce(t *testing.T) {
+	store := newMemStateStorage()
+	code := store.CreateCodeData("sub", "sid", "ctx", oidcprovider.GenericProvider)
+
+	const n = 32
+	var wg sync.WaitGroup
+	var consumed atomic.Int32
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			store.CreateCodeData("other", "sid", "ctx", oidcprovider.GenericProvider)
+			if store.GetCodeData(code) != nil && store.DeleteCodeData(code) {
+				consumed.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	require.Equal(t, int32(1), consumed.Load())
 }
 
 func TestDelegatedCodeIsolation(t *testing.T) {
@@ -61,7 +145,7 @@ func TestDelegatedCodeIsolation(t *testing.T) {
 		FranceConnectID: "fc-sub",
 	}
 	stores := map[string]stateStorage{
-		"memory": &memStateStorage{codes: make(map[string]*DelegatedCodeData)},
+		"memory": newMemStateStorage(),
 		"redis": &redisStateStorage{
 			cl:  &delegatedCodeRedis{values: make(map[string]string)},
 			ctx: context.Background(),
@@ -123,7 +207,7 @@ func TestDelegatedCodeContextMismatch(t *testing.T) {
 	config.UseTestFile(t)
 	previousStorage := globalStorage
 	t.Cleanup(func() { globalStorage = previousStorage })
-	globalStorage = &memStateStorage{codes: make(map[string]*DelegatedCodeData)}
+	globalStorage = newMemStateStorage()
 	userinfo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "Bearer external-token", r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
@@ -205,14 +289,29 @@ func TestAccessTokenValidatesOIDCToken(t *testing.T) {
 				"allow_custom_instance": true,
 				"userinfo_url":          idp.URL + "/userinfo",
 				"id_token_jwk_url":      jwksURL,
+				"issuer":                "https://idp.example",
+				"client_id":             "cozy-client",
 			},
 		},
 	}
 	inst := &instance.Instance{
 		Domain: "alice.twake.app", ContextName: "oauth_token_context", OIDCID: "alice-sub",
 	}
+	idTokenWith := func(overrides map[string]interface{}) string {
+		claims := map[string]interface{}{
+			"sub": "alice-sub", "sid": "sid", "iss": "https://idp.example", "aud": "cozy-client",
+		}
+		for k, v := range overrides {
+			if v == nil {
+				delete(claims, k)
+			} else {
+				claims[k] = v
+			}
+		}
+		return makeSignedJWT(t, privateKey, kid, claims)
+	}
 	idToken := func(sub string) string {
-		return makeSignedJWT(t, privateKey, kid, map[string]interface{}{"sub": sub, "sid": "sid"})
+		return idTokenWith(map[string]interface{}{"sub": sub})
 	}
 
 	for _, tc := range []struct {
@@ -222,6 +321,10 @@ func TestAccessTokenValidatesOIDCToken(t *testing.T) {
 	}{
 		{"unsigned id_token", `{"id_token":"` + makeUnsignedJWT(map[string]interface{}{"sub": "alice-sub", "sid": "sid"}) + `"}`, "invalid token"},
 		{"id_token of another user", `{"id_token":"` + idToken("other-sub") + `"}`, "OIDC Domain Mismatch alice.twake.app other-sub"},
+		{"id_token issued to another client", `{"id_token":"` + idTokenWith(map[string]interface{}{"aud": "other-client"}) + `"}`, "invalid token"},
+		{"id_token without aud", `{"id_token":"` + idTokenWith(map[string]interface{}{"aud": nil}) + `"}`, "invalid token"},
+		{"id_token of another issuer", `{"id_token":"` + idTokenWith(map[string]interface{}{"iss": "https://evil.example"}) + `"}`, "invalid token"},
+		{"id_token without iss", `{"id_token":"` + idTokenWith(map[string]interface{}{"iss": nil}) + `"}`, "invalid token"},
 		{"oidc_token refused by the IdP", `{"oidc_token":"garbage"}`, "OIDC service responded with 401"},
 		{"oidc_token of another user", `{"oidc_token":"other-user-token"}`, "OIDC Domain Mismatch alice.twake.app other-sub"},
 	} {
@@ -238,6 +341,8 @@ func TestAccessTokenValidatesOIDCToken(t *testing.T) {
 	}
 
 	require.NoError(t, validateOIDCToken(inst, idToken("alice-sub"), ""))
+	// a token asked by the admin app that also lists our client_id in aud
+	require.NoError(t, validateOIDCToken(inst, idTokenWith(map[string]interface{}{"aud": []string{"admin", "cozy-client"}, "azp": "admin"}), ""))
 	require.NoError(t, validateOIDCToken(inst, "", "alice-token"))
 }
 
@@ -1762,4 +1867,71 @@ func makeBackchannelLogoutClaims(issuer, audience, sid string, extra map[string]
 		claims[key] = value
 	}
 	return claims
+}
+
+func TestDelegatedCodeCannotBeReplayed(t *testing.T) {
+	config.UseTestFile(t)
+	previousStorage := globalStorage
+	t.Cleanup(func() { globalStorage = previousStorage })
+	globalStorage = newMemStateStorage()
+
+	env := newBackchannelLogoutTestEnv(t)
+	previousAuthentication := config.GetConfig().Authentication
+	t.Cleanup(func() { config.GetConfig().Authentication = previousAuthentication })
+	_, _, jwksURL := newBackchannelSigningKey(t)
+	contextName := "replay-code-context"
+	inst := env.setup.GetTestInstance(&lifecycle.Options{
+		ContextName: contextName,
+		OIDCID:      "replay-code-sub",
+	})
+	oidcConfig := makeTestOIDCConfig("https://issuer.example/replay", "replay-client-id", jwksURL)
+	oidcConfig["allow_oauth_token"] = true
+	config.GetConfig().Authentication = map[string]interface{}{
+		contextName: map[string]interface{}{"oidc": oidcConfig},
+	}
+	client := createFlagshipOAuthClient(t, inst)
+
+	code := getStorage().CreateCodeData(inst.OIDCID, "", inst.ContextName, oidcprovider.GenericProvider)
+	issueOIDCAccessTokenWithDelegatedCode(t, env.client, inst, client, code)
+
+	env.client.POST("/oidc/access_token").
+		WithHost(inst.Domain).
+		WithJSON(map[string]string{
+			"client_id":     client.ClientID,
+			"client_secret": client.ClientSecret,
+			"scope":         "*",
+			"code":          code,
+		}).
+		Expect().
+		Status(http.StatusBadRequest).
+		JSON().Object().HasValue("error", invalidDelegatedCode)
+}
+
+func TestDelegatedCodeOutlivesARefusedScope(t *testing.T) {
+	config.UseTestFile(t)
+	previousStorage := globalStorage
+	t.Cleanup(func() { globalStorage = previousStorage })
+	globalStorage = newMemStateStorage()
+
+	env := newBackchannelLogoutTestEnv(t)
+	inst := env.setup.GetTestInstance(&lifecycle.Options{
+		ContextName: "scope-code-context",
+		OIDCID:      "scope-code-sub",
+	})
+	client := createFlagshipOAuthClient(t, inst)
+
+	code := getStorage().CreateCodeData(inst.OIDCID, "", inst.ContextName, oidcprovider.GenericProvider)
+	env.client.POST("/oidc/access_token").
+		WithHost(inst.Domain).
+		WithJSON(map[string]string{
+			"client_id":     client.ClientID,
+			"client_secret": client.ClientSecret,
+			"scope":         "",
+			"code":          code,
+		}).
+		Expect().
+		Status(http.StatusBadRequest).
+		JSON().Object().HasValue("error", "invalid scope")
+
+	issueOIDCAccessTokenWithDelegatedCode(t, env.client, inst, client, code)
 }

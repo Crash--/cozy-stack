@@ -88,6 +88,17 @@ func (im *importer) downloadFile(cursor string) error {
 	return err
 }
 
+func reportImportDoctype(doctype string) string {
+	switch couchdb.EscapeCouchdbName(doctype) {
+	case couchdb.EscapeCouchdbName(consts.PublicLinkReports):
+		return consts.PublicLinkReports
+	case couchdb.EscapeCouchdbName(consts.Permissions):
+		return consts.Permissions
+	default:
+		return doctype
+	}
+}
+
 func (im *importer) importZip(zr *zip.Reader) error {
 	var errm error
 
@@ -104,7 +115,10 @@ func (im *importer) importZip(zr *zip.Reader) error {
 		id := strings.TrimSuffix(parts[1], ".json")
 
 		// Special cases
-		switch doctype {
+		switch reportImportDoctype(doctype) {
+		case consts.PublicLinkReports:
+			// Checkpoints and bindings are local authority; CSVs remain ordinary files.
+			continue
 		case consts.Exports:
 			// Importing exports would just be a mess, so skip them
 			continue
@@ -112,9 +126,10 @@ func (im *importer) importZip(zr *zip.Reader) error {
 			// We don't want to import the sessions from another instance, nor
 			// its access codes that are short-lived and bound to its clients
 			continue
-		case consts.FilesRecents:
-			// Recents are personal activity, not user data: they are not
-			// exported, and a crafted archive must not create rows
+		case consts.FilesRecents, consts.FilesUploads:
+			// Recents are personal activity and uploads point to the storage of
+			// the source instance: they are not exported, and a crafted archive
+			// must not create rows
 			continue
 		case consts.BitwardenCiphers, consts.BitwardenFolders, consts.BitwardenProfiles,
 			consts.BitwardenOrganizations, consts.BitwardenContacts:
@@ -527,6 +542,9 @@ func (im *importer) importPermission(zf *zip.File) error {
 	// We only import permission documents for sharings
 	if doc.Type != permission.TypeShareByLink && doc.Type != permission.TypeSharePreview {
 		return nil
+	}
+	if doc.Type == permission.TypeShareByLink {
+		doc.ActivityReportEnabled = nil
 	}
 	// We need to remake the long codes with the new instance domain
 	for name := range doc.Codes {

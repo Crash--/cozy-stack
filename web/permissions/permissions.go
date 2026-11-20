@@ -170,6 +170,9 @@ func HandleCreateShareByLink(c echo.Context, inst *instance.Instance, opts Creat
 	if parent == nil {
 		return echo.NewHTTPError(http.StatusUnauthorized, "no parent")
 	}
+	if parent.Type == permission.TypeShareByLink || parent.Type == permission.TypeSharePreview {
+		return permission.ErrNotParent
+	}
 
 	var creatorDomain string
 	if opts.CreatorDomain != nil {
@@ -445,6 +448,10 @@ func patchPermission(getPerms getPermsFunc, paramName string) echo.HandlerFunc {
 		if err != nil {
 			return err
 		}
+		switch current.Type {
+		case permission.TypeShareByLink, permission.TypeSharePreview, permission.TypeShareInteract:
+			return middlewares.ErrForbidden
+		}
 
 		var patch permission.Permission
 		if _, err = jsonapi.Bind(c.Request().Body, &patch); err != nil {
@@ -460,21 +467,32 @@ func patchPermission(getPerms getPermsFunc, paramName string) echo.HandlerFunc {
 		}
 
 		// Adding rules to the permissions of another app is how apps cooperate,
-		// but the codes of a sharing can only be changed by their owner.
+		// but the codes of a sharing, the password and the expiration can only
+		// be changed by their owner.
 		sharingCodes := toPatch.Type == permission.TypeShareByLink ||
 			toPatch.Type == permission.TypeSharePreview ||
 			toPatch.Type == permission.TypeShareInteract
-		if (!patchSet || sharingCodes) && !current.CanUpdateShareByLink(toPatch) {
+		changesAccess := patch.Password != nil || patch.ExpiresAt != nil
+		if (!patchSet || sharingCodes || changesAccess || patch.ActivityReportEnabled != nil) && !current.CanUpdateShareByLink(toPatch) {
 			return permission.ErrNotParent
 		}
+		// Only the owner can remove rules or change metadata.
+		owner := ownsPermission(current, toPatch)
 
 		if patchCodes == patchSet {
 			if patchSet {
 				return ErrPatchCodeOrSet
 			}
-			if patch.Password == nil && patch.ExpiresAt == nil {
+			if patch.Password == nil && patch.ExpiresAt == nil && patch.ActivityReportEnabled == nil {
 				return ErrPatchCodeOrSet
 			}
+		}
+
+		if patch.Metadata != nil && !owner {
+			return permission.ErrNotParent
+		}
+		if patch.ActivityReportEnabled != nil {
+			toPatch.ActivityReportEnabled = patch.ActivityReportEnabled
 		}
 
 		if pass, ok := patch.Password.(string); ok {
@@ -507,6 +525,9 @@ func patchPermission(getPerms getPermsFunc, paramName string) echo.HandlerFunc {
 		if patchSet {
 			for _, r := range patch.Permissions {
 				if r.Type == "" {
+					if !owner {
+						return permission.ErrNotParent
+					}
 					toPatch.RemoveRule(r)
 					continue
 				}
@@ -522,6 +543,15 @@ func patchPermission(getPerms getPermsFunc, paramName string) echo.HandlerFunc {
 					if err := vfs.AllowsRule(instance.VFS(), current.Permissions, r); err != nil {
 						return err
 					}
+				}
+				// A rule with the title of an existing one replaces it: only the
+				// owner, or a caller that could have added the replaced rule
+				// itself, can do it.
+				if !owner && toPatch.Permissions.Some(func(e permission.Rule) bool {
+					return e.Title == r.Title && !current.Permissions.RuleInSubset(e) &&
+						vfs.AllowsRule(instance.VFS(), current.Permissions, e) != nil
+				}) {
+					return permission.ErrNotParent
 				}
 				toPatch.AddRules(r)
 			}
@@ -552,9 +582,27 @@ func patchPermission(getPerms getPermsFunc, paramName string) echo.HandlerFunc {
 		if toPatch.Password != nil {
 			toPatch.Password = true
 		}
+		if !owner {
+			toPatch.Codes = nil
+			toPatch.ShortCodes = nil
+		}
 
 		return jsonapi.Data(c, http.StatusOK, &APIPermission{Permission: toPatch}, nil)
 	}
+}
+
+// ownsPermission tells if the permissions of the request are those of the
+// app that owns toPatch, or, for a share by link, of a webapp or OAuth client
+// that can update it: its creator, or any of them having all its
+// permissions. A share by link has the type and source of other links of the
+// same app, so it never owns anything.
+func ownsPermission(current, toPatch *permission.Permission) bool {
+	if current.Type == permission.TypeWebapp || current.Type == permission.TypeKonnector {
+		if current.Type == toPatch.Type && current.SourceID == toPatch.SourceID {
+			return true
+		}
+	}
+	return current.CanUpdateShareByLink(toPatch)
 }
 
 func revokePermission(c echo.Context) error {

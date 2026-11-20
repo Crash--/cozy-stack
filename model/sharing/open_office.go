@@ -131,7 +131,7 @@ func OpenOffice(inst *instance.Instance, fileID string, user *instance.Instance)
 	}
 
 	// Check that the file is an office document
-	if !isOfficeDocument(file) {
+	if !office.IsOfficeDocument(file) {
 		return nil, office.ErrInvalidFile
 	}
 
@@ -220,7 +220,7 @@ func (o *OfficeOpener) openLocalDocument(memberIndex int, readOnly bool) (*apiOf
 			Infof("Cannot add doc to store: %s", err)
 		return nil, ErrInternalServerError
 	}
-	office.OpenSession(o.Inst, o.User, o.File, o.activityDrive(), key)
+	office.OpenSession(o.Inst, o.User, o.File, o.inDrive(), key)
 	publicName, _ := settings.PublicName(o.Inst)
 	doc.PublicName = publicName
 	doc.OO = &onlyOffice{
@@ -280,18 +280,18 @@ func (o *OfficeOpener) openSharedDocument(prepared *PreparedRequest) (*apiOffice
 	return &doc, nil
 }
 
-// activityDrive tells, on the owner of the document, whether a drive gives the
+// inDrive tells, on the owner of the document, whether a drive gives the
 // document to the opening user: it is called on the instance of the owner, as
 // the shared drive proxy forwards the opening to the /office route of the
 // owner. It is false when the user owns the document, or opens it outside of a
 // drive (a classic sharing). The drive comes from the position of the document,
 // never from the route or the code of the request.
-func (o *OfficeOpener) activityDrive() bool {
+func (o *OfficeOpener) inDrive() bool {
 	if o.User == nil || o.User.Domain == o.Inst.Domain {
 		return false
 	}
 	// Without a drive, error included, the opening records nothing.
-	inDrive, _ := ActivityDrive(o.User, o.Inst, nil, o.File)
+	inDrive, _ := InDrive(o.User, o.Inst, nil, o.File)
 	return inDrive
 }
 
@@ -305,7 +305,8 @@ func (o *OfficeOpener) downloadURL() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return o.Inst.PageURL("/files/downloads/"+secret+"/"+o.File.DocName, nil), nil
+	query := url.Values{office.DocumentServerParam: {"1"}}
+	return o.Inst.PageURL("/files/downloads/"+secret+"/"+o.File.DocName, query), nil
 }
 
 // uploadedDate returns the uploaded date for a file in the date format used by
@@ -336,15 +337,6 @@ func documentType(f *vfs.FileDoc) string {
 // fileType returns the extension expected by the OnlyOffice document config.
 func fileType(f *vfs.FileDoc) string {
 	return strings.ToLower(strings.TrimPrefix(path.Ext(f.DocName), "."))
-}
-
-func isOfficeDocument(f *vfs.FileDoc) bool {
-	switch f.Class {
-	case "pdf", "spreadsheet", "slide", "text":
-		return true
-	default:
-		return false
-	}
 }
 
 func shouldOpenANewVersion(file *vfs.FileDoc, detector *office.ConflictDetector) bool {

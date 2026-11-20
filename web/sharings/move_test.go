@@ -66,6 +66,28 @@ func setupSharedDrivesEnv(t *testing.T) *sharedDrivesEnv {
 
 func setupSharedDrivesEnvWithOwnerOptions(t *testing.T, ownerOptions *lifecycle.Options) *sharedDrivesEnv {
 	t.Helper()
+	env := setupSharedDriveRoot(t, ownerOptions)
+	eA := newSharingExpect(t, env.tsA.URL)
+
+	env.productDirID = createDirectory(t, eA, env.firstRootDirID, "Product", env.acmeToken)
+	env.meetingsDirID = createDirectory(t, eA, env.firstRootDirID, "Meetings", env.acmeToken)
+	env.checklistID = createFile(t, eA, env.meetingsDirID, "Checklist.txt", env.acmeToken)
+	env.outsideOfShareID = createRootDirectory(t, eA, "Unshared directory at the root of ACME", env.acmeToken)
+	return env
+}
+
+func setupSharedDriveRoot(t *testing.T, ownerOptions *lifecycle.Options) *sharedDrivesEnv {
+	t.Helper()
+	env := setupSharedDriveParticipants(t, ownerOptions)
+	env.rootDirName = "One More Shared Drive " + crypto.GenerateRandomString(1000)
+	env.firstSharingID, env.firstRootDirID, _ = createSharedDrive(t, DriveCreationMethodLegacy,
+		env.acme, env.acmeToken, env.tsA.URL, env.rootDirName, "One more Shared drive description", nil)
+	acceptSharedDriveForBetty(t, env.acme, env.betty, env.tsA.URL, env.tsB.URL, env.firstSharingID)
+	return env
+}
+
+func setupSharedDriveParticipants(t *testing.T, ownerOptions *lifecycle.Options) *sharedDrivesEnv {
+	t.Helper()
 
 	config.UseTestFile(t)
 	build.BuildMode = build.ModeDev
@@ -105,31 +127,10 @@ func setupSharedDrivesEnvWithOwnerOptions(t *testing.T, ownerOptions *lifecycle.
 		nil,
 	)
 
-	// Create initial shared drive and accept as Betty; create common dirs
-	rootDirName := "One More Shared Drive " + crypto.GenerateRandomString(1000)
-	sharingID, firstRootDirID, _ := createSharedDrive(t, DriveCreationMethodLegacy, acme, acmeToken, tsA.URL,
-		rootDirName, "One more Shared drive description", nil)
-	acceptSharedDriveForBetty(t, acme, betty, tsA.URL, tsB.URL, sharingID)
-
-	// Create temporary clients for initial setup
-	eA := newSharingExpect(t, tsA.URL)
-
-	productDirID := createDirectory(t, eA, firstRootDirID, "Product", acmeToken)
-	meetingsDirID := createDirectory(t, eA, firstRootDirID, "Meetings", acmeToken)
-
-	// Create a file inside meetingsDirID for file operation tests
-	checklistID := createFile(t, eA, meetingsDirID, "Checklist.txt", acmeToken)
-
-	// Create a directory outside the share for boundary tests
-	outsideOfShareID := createRootDirectory(t, eA, "Unshared directory at the root of ACME", acmeToken)
-
 	return &sharedDrivesEnv{
 		acme: acme, betty: betty, dave: dave,
 		acmeToken: acmeToken, bettyToken: bettyToken, daveToken: daveToken,
 		tsA: tsA, tsB: tsB, tsD: tsD,
-		firstSharingID: sharingID, firstRootDirID: firstRootDirID, rootDirName: rootDirName,
-		productDirID: productDirID, meetingsDirID: meetingsDirID,
-		checklistID: checklistID, outsideOfShareID: outsideOfShareID,
 	}
 }
 
@@ -254,6 +255,18 @@ func TestSharedDrivesMove(t *testing.T) {
 	}
 
 	env := setupSharedDrivesEnv(t)
+
+	t.Run("CopyRequiresSourceInsideSelectedDrive", func(t *testing.T) {
+		_, eB, _ := env.createClients(t)
+		otherDriveID := createAcceptedSharedDriveForRecipient(t, env,
+			RecipientInfo{Name: "Betty", Email: "betty@example.net"}, env.betty, env.tsB.URL)
+		eB.POST("/sharings/drives/move").WithHeader("Authorization", "Bearer "+env.bettyToken).
+			WithJSON(map[string]interface{}{
+				"source": map[string]string{"instance": "https://" + env.acme.Domain, "sharing_id": otherDriveID, "file_id": env.checklistID},
+				"dest":   map[string]string{"dir_id": consts.RootDirID},
+				"copy":   true,
+			}).Expect().Status(http.StatusNotFound)
+	})
 
 	t.Run("SuccessfulMove_ToSharedDrive_SameStack", func(t *testing.T) {
 		_, eB, _ := env.createClients(t)
@@ -1434,7 +1447,8 @@ func TestSharedDrivesMove(t *testing.T) {
 		require.NoError(t, nestedSharing.AddReferenceForSharing(env.acme, &nestedSharing.Rules[0]))
 
 		// Create a file inside the nested folder
-		fileToMove := createFile(t, eA, nestedDirID, testify(t, "nested-file.txt"), env.acmeToken)
+		fileName := testify(t, "nested-file.txt")
+		fileToMove := createFile(t, eA, nestedDirID, fileName, env.acmeToken)
 
 		// Dave moves the file inside the nested folder (same instance, same
 		// sharing scope) → should succeed because he is RW on the nested scope
@@ -1451,6 +1465,32 @@ func TestSharedDrivesMove(t *testing.T) {
 			    "dir_id": "`+destDirID+`"
 			  }
 			}`)
+
+		// The nested write grant now belongs to another instance with the same contact email.
+		nestedSharing.Members[1].Instance = "https://" + env.betty.Domain
+		require.NoError(t, couchdb.UpdateDoc(env.acme, nestedSharing))
+		transfer := func(copy bool, status int) {
+			t.Helper()
+			eD.POST("/sharings/drives/move").WithHeader("Authorization", "Bearer "+env.daveToken).
+				WithJSON(map[string]interface{}{
+					"source": map[string]string{"instance": "https://" + env.acme.Domain, "sharing_id": rootSharingID, "file_id": fileToMove},
+					"dest":   map[string]string{"dir_id": consts.RootDirID},
+					"copy":   copy,
+				}).Expect().Status(status)
+		}
+		transfer(false, http.StatusForbidden)
+		verifyFileExists(t, env.acme, fileToMove, fileName, destDirID, "foo")
+		exists, err := env.dave.VFS().DirChildExists(consts.RootDirID, fileName)
+		require.NoError(t, err)
+		require.False(t, exists)
+
+		transfer(true, http.StatusCreated)
+
+		ownerDrive, err := sharing.FindSharing(env.acme, rootSharingID)
+		require.NoError(t, err)
+		i := findSharingMemberIndexByEmail(t, env.acme, rootSharingID, "dave@example.net")
+		require.NoError(t, ownerDrive.RemoveInteractPermissionsForAMember(env.acme, &ownerDrive.Members[i], i))
+		transfer(true, http.StatusNotFound)
 	})
 
 	// Alice shares the parent drive with Bob, a nested drive inside it with

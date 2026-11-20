@@ -1,6 +1,7 @@
 package office
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"strconv"
@@ -10,7 +11,6 @@ import (
 	"github.com/cozy/cozy-stack/model/permission"
 	"github.com/cozy/cozy-stack/model/sharing"
 	"github.com/cozy/cozy-stack/model/vfs"
-	"github.com/cozy/cozy-stack/pkg/consts"
 	"github.com/cozy/cozy-stack/pkg/jsonapi"
 	"github.com/cozy/cozy-stack/web/files"
 	"github.com/cozy/cozy-stack/web/middlewares"
@@ -45,14 +45,6 @@ func OpenWithReadOnly(c echo.Context, readOnly bool) error {
 		pdoc.Type == permission.TypeShareInteract {
 		code := middlewares.GetRequestToken(c)
 		open.AddShareByLinkCode(code)
-		if !readOnly {
-			readOnly = true
-			for _, perm := range pdoc.Permissions {
-				if perm.Type == consts.Files && !perm.Verbs.ReadOnly() {
-					readOnly = false
-				}
-			}
-		}
 	}
 
 	sharingID := c.QueryParam("SharingID") // Cozy to Cozy sharing
@@ -98,7 +90,9 @@ func Callback(c echo.Context) error {
 		inst.Logger().WithNamespace("office").
 			Infof("Error on the callback: %s", err)
 		code := http.StatusInternalServerError
-		if httpError, ok := err.(*echo.HTTPError); ok {
+		if errors.Is(err, office.ErrNoServer) {
+			code = http.StatusNotFound
+		} else if httpError, ok := err.(*echo.HTTPError); ok {
 			code = httpError.Code
 		}
 		return c.JSON(code, echo.Map{"error": err.Error()})
