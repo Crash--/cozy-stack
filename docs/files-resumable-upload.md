@@ -96,11 +96,13 @@ sequenceDiagram
   to the usual upload, which would create an empty file. At the limit of
   uploads in progress it gets `429`; with another interop version, on a
   storage without resumable uploads, for a note (`.cozy-note`, imported in one
-  request), in a shared drive, or with `SourceURL`, it gets `501` with an
+  request), or with `SourceURL`, it gets `501` with an
   `application/problem+json` body, and nothing is created or imported. The
   client then sends the whole content in one request.
 - The new routes are `HEAD`, `PATCH` and `DELETE` on
-  `/files/uploads/:upload-id`.
+  `/files/uploads/:upload-id`, and on
+  `/sharings/drives/:id/uploads/:upload-id` for the
+  [shared drives](#shared-drives).
 - The `resumable_uploads` capability of
   [`GET /settings/capabilities`](settings.md#get-settingscapabilities) is true
   when the VFS of the instance accepts the resumable uploads. A client checks
@@ -108,6 +110,14 @@ sequenceDiagram
   uploads, creates an empty file for such a request.
 - A name already taken is refused with `409` when the upload is created, like
   the usual upload, and checked again at the end.
+- A drive member whose stack does not relay `X-Cozy-Resumable-Relay` is
+  answered as on a storage without resumable uploads (see [A member on an
+  older stack](#a-member-on-an-older-stack)).
+- In a shared drive, the stack of the member checks that the stack of the
+  owner can resume before it relays a request with `Upload-Complete: ?0`, and
+  answers `501` otherwise (see [An owner on an older
+  stack](#an-owner-on-an-older-stack)). `OPTIONS
+  /sharings/drives/:id/uploads` is new.
 
 ## The io.cozy.files.uploads document
 
@@ -119,6 +129,9 @@ fields:
   `internal_vfs_id`. It is indexed in `io.cozy.files` only at the end.
 - `old_file_id`, `old_rev`: the file whose content is replaced (`PUT`), and
   the revision expected by the client in `If-Match`.
+- `drive_id`, `drive_member`: the shared drive and its member (email, or
+  instance) who have created the upload, for an upload by a member (see
+  [Shared drives](#shared-drives)).
 - `length`: the size announced by the client, or -1 while unknown.
 - `offset`: the bytes written to the storage. It is saved only after the
   bytes are written, so it never goes backward.
@@ -236,6 +249,146 @@ What the Swift manifests change:
 On all the storages, a storage migration removes the uploads in progress,
 with their content, before the switch, as their parts are on the source.
 
+## Shared drives
+
+A member of a shared drive sends a file with the drive routes of their own
+stack. The upload lives on the instance of the owner, like the file it
+creates.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant M as Stack of the member
+    participant O as Stack of the owner
+    C->>M: POST /sharings/drives/:id/:dir-id
+    M->>O: the same request, with the drive token
+    O-->>M: 104 Location /sharings/drives/:id/uploads/:upload-id
+    M-->>C: 104, relayed
+    Note over C,O: the connection is lost
+    C->>M: HEAD /sharings/drives/:id/uploads/:upload-id
+    M->>O: relayed, the rights are checked again
+    O-->>C: 204 Upload-Offset N
+```
+
+- The `io.cozy.files.uploads` document and the parts are on the instance and
+  the storage of the owner. The quota and the expiration are those of the
+  owner. The `max-size` of `Upload-Limit` tells a member the free space of the
+  owner.
+- Each member is an account for the limits, whatever the drive: 20 uploads
+  in progress by default, apart from the 20 of the owner. A member at their
+  limit stops neither the other members nor the owner. The 200 uploads of the
+  instance count them all.
+- The routes are `HEAD`, `PATCH` and `DELETE` on
+  `/sharings/drives/:id/uploads/:upload-id`. Like the other drive routes, the
+  stack of the member serves them directly when the owner is on the same
+  stack, and relays them over HTTP with the drive token otherwise.
+- `Location` is a relative URL with this path. The sharing has the same ID on
+  both instances, so the client resolves it against the stack of the member,
+  which relays it. Nothing is rewritten.
+- Each request checks the rights again, on the instance of the owner: the
+  member behind the drive token, then their effective write access on the
+  folder of the upload, or on the file whose content it replaces. A member
+  removed from the drive or made read-only gets `403` on the next request,
+  `HEAD` included, as it takes the upload over. The parts already written stay
+  until the upload expires.
+- The upload keeps the drive and the member who have created it
+  (`drive_id`, `drive_member`). An upload of another member, of another
+  drive, or outside the drive answers `404`, like a missing one.
+- The relay forwards the `104` interim response: Go's `httputil.ReverseProxy`
+  relays the 1xx responses, and the stack writes them on the connection
+  directly, so that echo keeps the final status.
+
+### A member on an older stack
+
+The stack of a member and the stack of the owner can run two versions of
+cozy-stack:
+
+- during a deployment;
+- for a long time when they are on two platforms, for example SaaS and an
+  on-premise platform: a shared drive can join instances of different
+  domains.
+
+An older stack relays the request as it is, and the owner would start a
+resumable upload. A client that does not see the `104`, like a browser,
+creates an empty upload first (`Upload-Complete: ?0`), then:
+
+- it gets `200` instead of `201`, as the older relay takes the `104` for the
+  final status;
+- it cannot continue: the older stack has no route for `HEAD` and `PATCH` on
+  `/sharings/drives/:id/uploads/:upload-id`;
+- the upload stays open on the owner's instance for 7 days, and takes one of
+  the places of the member.
+
+So the relay announces that it knows the resumable uploads:
+
+- the stack of the member sets `X-Cozy-Resumable-Relay: 1` on each request
+  it relays to the owner, and on the requests it serves directly when the
+  owner is on the same stack;
+- the owner starts a resumable upload for a drive token only with this
+  header;
+- without it, the member is answered as on a storage without resumable
+  uploads: the usual upload for a request with the whole content, and `501`
+  for `Upload-Complete: ?0`.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant M as Older stack of the member
+    participant O as Stack of the owner
+    C->>M: POST /sharings/drives/:id/:dir-id (Upload-Complete ?0)
+    M->>O: the same request, without X-Cozy-Resumable-Relay
+    O-->>C: 501, send the whole content in one request
+    C->>M: POST with the whole content
+    M->>O: the same request
+    O-->>C: 201, usual upload
+```
+
+No web client speaks the protocol yet: this case becomes real when Drive
+web adopts it.
+
+### An owner on an older stack
+
+The `resumable_uploads` capability describes the stack of the member, not the
+stack of the owner. A stack of the owner older than the resumable uploads
+would make an empty file of a request with `Upload-Complete: ?0`. So the
+stack of the member asks the owner first:
+
+- `OPTIONS /sharings/drives/:id/uploads` answers with `Upload-Limit:
+  min-size=0` when the uploads to the drive can be resumable
+  ([§5.2](https://www.ietf.org/archive/id/draft-ietf-httpbis-resumable-upload-15.html#section-5.2)),
+  and without this header otherwise. An older stack has no such route.
+- Before it relays a `POST` or a `PUT` with `Upload-Complete: ?0`, the stack
+  of the member sends this request to the stack of the owner, with the drive
+  token. When the owner is on the same stack, it looks at the storage of the
+  owner instead.
+- The answer is kept 3 hours, by drive and address of the owner, in the
+  memory of the stack; each new answer removes the expired ones. A failure to
+  reach the owner is not kept, and the request gets `502`.
+- A redirection is not followed, as it would send the drive token to another
+  address: it counts as an owner that cannot resume, and is not kept.
+- When the owner cannot resume, the request gets `501`, as on a storage
+  without resumable uploads: nothing is relayed, and the client sends the
+  whole content in one request.
+- A request with the whole content is relayed as it is: an older owner makes a
+  usual upload of it.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant M as Stack of the member
+    participant O as Older stack of the owner
+    C->>M: POST /sharings/drives/:id/:dir-id (Upload-Complete ?0)
+    M->>O: OPTIONS /sharings/drives/:id/uploads
+    O-->>M: 405, no Upload-Limit
+    M-->>C: 501, send the whole content in one request
+```
+
+A client asks the stack of the member the same way, with `OPTIONS` on this
+route, to know if the uploads to a drive can be resumable. Its token needs
+the same right as for the other drive routes, on `io.cozy.files`, checked
+before the owner is asked. A browser cannot:
+the stack answers the `OPTIONS` requests with an `Origin` as CORS preflights.
+
 ## Settings and limits
 
 In the `fs.resumable_uploads` section of the configuration:
@@ -253,12 +406,14 @@ usual upload. The limits count the uploads in progress, read with the index
 on `completed`.
 
 The usual upload is also used for the requests without the protocol headers,
-the shared drives, `SourceURL`, and notes. The uploads in progress count in
-the quota, checked before each part: an upload that goes over it gets `413`
-and is removed. A length announced on creation or on an append must fit in
-the space left. The other uploads count with their announced length, except
-the ones of a sharing by link, which count only with their written bytes: a
-visitor cannot take the space of the uploads of the owner. The `max-size` of `Upload-Limit` is the space left on the
+`SourceURL`, and notes. A `SourceURL` is downloaded by the stack itself, so
+there is no client to resume it. The uploads in progress count in the quota,
+checked before each part: an upload that goes over it gets `413` and is
+removed. A length announced on creation or on an append must fit in the space
+left. The other uploads count with their announced length, except the ones of
+a sharing by link, which count only with their written bytes: a visitor
+cannot take the space of the uploads of the owner. The `max-size` of
+`Upload-Limit` is the space left on the
 instance, and is not announced to the visitors of a sharing by link. A daily
 `clean-uploads` job per instance removes the expired uploads with their
 content.
@@ -359,9 +514,3 @@ To remove the lock of the VFS later:
 
 - The `io.cozy.files.uploads` database is created at the first resumable
   upload of an instance, not on every instance.
-
-## Open questions
-
-- @Quentin: the uploads to a shared drive and the uploads from a `SourceURL`
-  are always usual uploads. Should the resumable upload be extended to them?
-  A following pull request will handle it.

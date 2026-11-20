@@ -7,6 +7,7 @@ import (
 
 	"github.com/cozy/cozy-stack/model/job"
 	"github.com/cozy/cozy-stack/model/permission"
+	"github.com/cozy/cozy-stack/model/sharing"
 	"github.com/cozy/cozy-stack/model/vfs"
 	"github.com/cozy/cozy-stack/web/middlewares"
 	"github.com/labstack/echo/v4"
@@ -20,22 +21,24 @@ func refuseResumableUpload(c echo.Context) (bool, error) {
 	if !ok || complete {
 		return false, nil
 	}
-	return true, uploadProblem(c, http.StatusNotImplemented, "about:blank", "Resumable upload unavailable",
-		"The upload cannot be resumable here: send the whole content in one request.", nil)
+	return true, UploadUnavailable(c)
 }
 
 // startUpload handles a request that creates a file (olddoc is nil) or
 // replaces its content, when it asks for a resumable upload. It returns false
 // when the request must go through the usual upload. The returned document is
 // nil when the response has already been written.
-func startUpload(c echo.Context, fs vfs.VFS, newdoc, olddoc *vfs.FileDoc, oldRev string) (bool, *vfs.FileDoc, error) {
+func startUpload(c echo.Context, fs vfs.VFS, newdoc, olddoc *vfs.FileDoc, oldRev string, sharedDrive *sharing.Sharing) (bool, *vfs.FileDoc, error) {
 	req := c.Request()
 	complete, ok := parseSFBoolean(req.Header.Get(headerUploadComplete))
 	if !ok {
 		return false, nil, nil
 	}
 	interop := interopVersion(c)
-	if interop == "" || !vfs.SupportsUploads(fs) {
+	drive, fromMember := uploadDriveMember(c)
+	// The stack of a member that does not relay the resumption cannot resume.
+	relayed := !fromMember || req.Header.Get(HeaderResumableRelay) != ""
+	if interop == "" || !vfs.SupportsUploads(fs) || !relayed {
 		refused, err := refuseResumableUpload(c)
 		return refused, nil, err
 	}
@@ -63,6 +66,11 @@ func startUpload(c echo.Context, fs vfs.VFS, newdoc, olddoc *vfs.FileDoc, oldRev
 	if perm, err := middlewares.GetPermission(c); err == nil && perm.Type == permission.TypeShareByLink {
 		newUpload = vfs.NewUploadByLink
 	}
+	if fromMember {
+		newUpload = func(fs vfs.VFS, newdoc, olddoc *vfs.FileDoc, oldRev string, length int64) (*vfs.Upload, error) {
+			return vfs.NewDriveUpload(fs, newdoc, olddoc, oldRev, length, drive.id, drive.member)
+		}
+	}
 	u, err := newUpload(fs, newdoc, olddoc, oldRev, length)
 	if errors.Is(err, vfs.ErrTooManyUploads) && complete {
 		newdoc.ByteSize = req.ContentLength
@@ -74,7 +82,7 @@ func startUpload(c echo.Context, fs vfs.VFS, newdoc, olddoc *vfs.FileDoc, oldRev
 	inst := middlewares.GetInstance(c)
 	job.EnsureCleanUploadsTrigger(inst)
 
-	sendInterimResponse(c, fs, u, interop)
+	sendInterimResponse(c, fs, u, interop, sharedDrive)
 	created, err := vfs.AppendUpload(fs, u, req.Body, complete)
 	if err != nil {
 		inst.Logger().WithNamespace("files").
@@ -86,7 +94,7 @@ func startUpload(c echo.Context, fs vfs.VFS, newdoc, olddoc *vfs.FileDoc, oldRev
 	if complete {
 		return true, created, nil
 	}
-	c.Response().Header().Set(echo.HeaderLocation, uploadLocation(u))
+	c.Response().Header().Set(echo.HeaderLocation, uploadLocation(u, sharedDrive))
 	c.Response().Header().Set(headerUploadOffset, strconv.FormatInt(u.Offset, 10))
 	setUploadLimit(c, fs, u, interop)
 	return true, nil, c.NoContent(http.StatusCreated)
