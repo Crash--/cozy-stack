@@ -877,6 +877,21 @@ rabbitmq:
           delivery_limit: 5
           bindings:
             - drive.org_drive.ensure
+        # The commands of a side service on the pointers of an instance, the
+        # files that stand for a document of another app (metadata.externalId).
+        - name: stack.drive.pointers
+          declare: true
+          declare_dlx: true
+          declare_dlq: true
+          dlx_name: stack.drive.dlx
+          dlq_name: stack.dead.letter.drive.pointers
+          dl_routing_key: drive.pointers.dead
+          prefetch: 8
+          delivery_limit: 5
+          bindings:
+            - drive.pointer.ensure
+            - drive.pointer.remove
+            - drive.pointer.restore
     - name: rag.index.topic
       kind: topic
       durable: true
