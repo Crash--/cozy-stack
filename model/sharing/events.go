@@ -28,6 +28,7 @@ func (s *Sharing) emitMember(inst *instance.Instance, eventType string, m *Membe
 		Owner:     s.Owner,
 		Drive:     s.Drive,
 		FileIDs:   []string{},
+		Name:      s.Description,
 	}
 	if len(s.Members) > 0 {
 		data.Sharer = s.Members[0].Instance

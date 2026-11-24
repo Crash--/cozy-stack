@@ -92,6 +92,8 @@ type Member struct {
 	ReadOnly  bool     `json:"read_only"`
 	Status    string   `json:"status"`
 	FileIDs   []string `json:"file_ids"`
+	// Name is the description of the sharing: the name of a shared drive.
+	Name string `json:"name,omitempty"`
 }
 
 // Link is the data of the sharing.link events.
