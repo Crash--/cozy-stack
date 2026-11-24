@@ -1,8 +1,8 @@
-// Package driveevents publishes on RabbitMQ what happens to the files, the
-// sharings and the share by links of an instance, as CloudEvents on the
-// activity exchange. Each event is carried by a job: the job system is the
-// outbox, and a job keeps the id of its event across retries, so a consumer
-// can drop the duplicates.
+// Package driveevents publishes on RabbitMQ what happens to the files that
+// point to a document of another app, and to the members and links of the
+// sharings, as CloudEvents on the activity exchange. Each event is carried by
+// a job: the job system is the outbox, and a job keeps the id of its event
+// across retries, so a consumer can drop the duplicates.
 package driveevents
 
 import (
@@ -22,22 +22,32 @@ import (
 // WorkerType is the type of the jobs publishing the events.
 const WorkerType = "drive-events"
 
+// ExternalIDKey is the metadata key that makes a file a pointer to a document
+// of another app. Only those files have events: the bus is not flooded by
+// every upload.
+const ExternalIDKey = "externalId"
+
+// ExternalRoleKey is the metadata key of the role of the owner of the instance
+// on the external document.
+const ExternalRoleKey = "externalRole"
+
 // The event types, used as routing keys.
 const (
-	FileCreated   = "file.created"
-	FileCopied    = "file.copied"
-	FileMoved     = "file.moved"
-	FileTrashed   = "file.trashed"
-	FileRestored  = "file.restored"
-	FileDestroyed = "file.destroyed"
+	FileCreated   = "com.twake.drive.file.created.v1"
+	FileUpdated   = "com.twake.drive.file.updated.v1"
+	FileCopied    = "com.twake.drive.file.copied.v1"
+	FileMoved     = "com.twake.drive.file.moved.v1"
+	FileTrashed   = "com.twake.drive.file.trashed.v1"
+	FileRestored  = "com.twake.drive.file.restored.v1"
+	FileDestroyed = "com.twake.drive.file.destroyed.v1"
 
-	MemberAdded   = "sharing.member.added"
-	MemberUpdated = "sharing.member.updated"
-	MemberRemoved = "sharing.member.removed"
+	MemberAdded   = "com.twake.drive.sharing.member.added.v1"
+	MemberUpdated = "com.twake.drive.sharing.member.updated.v1"
+	MemberRemoved = "com.twake.drive.sharing.member.removed.v1"
 
-	LinkCreated = "sharing.link.created"
-	LinkUpdated = "sharing.link.updated"
-	LinkRevoked = "sharing.link.revoked"
+	LinkCreated = "com.twake.drive.sharing.link.created.v1"
+	LinkUpdated = "com.twake.drive.sharing.link.updated.v1"
+	LinkRevoked = "com.twake.drive.sharing.link.revoked.v1"
 )
 
 func init() {
@@ -64,6 +74,9 @@ type File struct {
 	Name     string       `json:"name"`
 	Mime     string       `json:"mime,omitempty"`
 	Metadata vfs.Metadata `json:"metadata,omitempty"`
+	// UpdatedByApps are the slugs of the apps that wrote the file, the last
+	// one last: a consumer recognizes its own writes.
+	UpdatedByApps []string `json:"updated_by_apps,omitempty"`
 	// From is the file it was copied or moved from.
 	From *File `json:"from,omitempty"`
 }
@@ -133,7 +146,19 @@ func Emit(db prefixer.Prefixer, eventType string, data any) {
 
 var emit = Emit
 
+// IsPointer tells if a file points to a document of another app.
+func IsPointer(doc *vfs.FileDoc) bool {
+	if doc == nil || doc.Metadata == nil {
+		return false
+	}
+	id, _ := doc.Metadata[ExternalIDKey].(string)
+	return id != ""
+}
+
 func fileChanged(db prefixer.Prefixer, olddoc, newdoc *vfs.FileDoc) {
+	if !IsPointer(olddoc) && !IsPointer(newdoc) {
+		return
+	}
 	domain := db.DomainName()
 	switch {
 	case olddoc == nil:
@@ -155,11 +180,27 @@ func fileChanged(db prefixer.Prefixer, olddoc, newdoc *vfs.FileDoc) {
 		emit(db, FileRestored, fileData(domain, newdoc, nil))
 	case olddoc.DirID != newdoc.DirID:
 		emit(db, FileMoved, fileData(domain, newdoc, &vfs.FileRef{ID: olddoc.ID(), Instance: domain}))
+	case olddoc.DocName != newdoc.DocName || metadataChanged(olddoc.Metadata, newdoc.Metadata):
+		emit(db, FileUpdated, fileData(domain, newdoc, nil))
 	}
+}
+
+func metadataChanged(old, updated vfs.Metadata) bool {
+	for _, key := range []string{ExternalIDKey, ExternalRoleKey} {
+		if old[key] != updated[key] {
+			return true
+		}
+	}
+	return false
 }
 
 func fileData(domain string, doc *vfs.FileDoc, from *vfs.FileRef) *File {
 	f := &File{ID: doc.ID(), Instance: domain, DirID: doc.DirID, Name: doc.DocName, Mime: doc.Mime, Metadata: doc.Metadata}
+	if doc.CozyMetadata != nil {
+		for _, entry := range doc.CozyMetadata.UpdatedByApps {
+			f.UpdatedByApps = append(f.UpdatedByApps, entry.Slug)
+		}
+	}
 	if from != nil {
 		f.From = &File{ID: from.ID, Instance: from.Instance}
 		if f.From.Instance == "" {
