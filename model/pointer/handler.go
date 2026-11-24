@@ -81,6 +81,15 @@ func (h *Handler) Handle(ctx context.Context, d amqp.Delivery) error {
 		}
 	case RoutingKeyRemove:
 		data.Gone, err = Remove(inst, cmd.FileID)
+	case RoutingKeyTrash:
+		var file *vfs.FileDoc
+		file, err = Trash(inst, cmd.FileID)
+		if err == nil && file == nil {
+			data.Gone = true
+		} else if err == nil {
+			data.FileID, data.DirID = file.ID(), file.DirID
+			data.ExternalID, _ = file.Metadata[ExternalIDKey].(string)
+		}
 	case RoutingKeyRestore:
 		var file *vfs.FileDoc
 		file, err = Restore(inst, cmd.FileID)
@@ -260,6 +269,24 @@ func Remove(inst *instance.Instance, fileID string) (bool, error) {
 		return false, err
 	}
 	return false, fs.DestroyFile(file)
+}
+
+// Trash puts a pointer in the trash of Drive, where its owner can restore it.
+// It returns nil when the file is gone, and the file unchanged when it is
+// already in the trash.
+func Trash(inst *instance.Instance, fileID string) (*vfs.FileDoc, error) {
+	fs := inst.VFS()
+	file, err := fs.FileByID(fileID)
+	if os.IsNotExist(err) || couchdb.IsNotFoundError(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if file.Trashed {
+		return file, nil
+	}
+	return vfs.TrashFile(fs, file)
 }
 
 // Restore takes a pointer out of the trash. It returns nil when the file is

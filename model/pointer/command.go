@@ -17,6 +17,7 @@ const (
 	RoutingKeyEnsure  = "drive.pointer.ensure"
 	RoutingKeyRemove  = "drive.pointer.remove"
 	RoutingKeyRestore = "drive.pointer.restore"
+	RoutingKeyTrash   = "drive.pointer.trash"
 	// RoutingKeyReady is the reply of a command, on the activity exchange.
 	RoutingKeyReady = "com.twake.drive.pointer.ready.v1"
 )
@@ -73,7 +74,7 @@ func ParseCommand(routingKey string, body []byte) (*Command, error) {
 		case cmd.DirID == "" && cmd.Folder == "":
 			return nil, malformed(routingKey, "missing dirId or folder")
 		}
-	case RoutingKeyRemove, RoutingKeyRestore:
+	case RoutingKeyRemove, RoutingKeyRestore, RoutingKeyTrash:
 		if cmd.FileID == "" {
 			return nil, malformed(routingKey, "missing fileId")
 		}

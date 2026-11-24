@@ -892,6 +892,7 @@ rabbitmq:
             - drive.pointer.ensure
             - drive.pointer.remove
             - drive.pointer.restore
+            - drive.pointer.trash
     - name: rag.index.topic
       kind: topic
       durable: true
