@@ -43,3 +43,17 @@ func (s *Sharing) emitMember(inst *instance.Instance, eventType string, m *Membe
 	}
 	driveevents.Emit(inst, eventType, data)
 }
+
+// EmitMembers publishes a sharing.member.updated event for every recipient of
+// the sharing, as the owner knows them: the initial state of a consumer that
+// missed the events, or a resynchronisation.
+func (s *Sharing) EmitMembers(inst *instance.Instance) {
+	if !s.Owner {
+		return
+	}
+	for i := range s.Members {
+		if i > 0 {
+			s.emitMember(inst, memberUpdated, &s.Members[i])
+		}
+	}
+}

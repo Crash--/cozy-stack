@@ -454,6 +454,26 @@ The fixed issues, in the same format as the checks:
 ]
 ```
 
+### POST /instances/:domain/fixers/drive-events
+
+Publish again the `sharing.member.updated` events of every shared drive the
+instance owns, one per member, for a consumer of the drive events that missed
+them (its first start, a lost message).
+
+#### Request
+
+```http
+POST /instances/acme.cozy.localhost/fixers/drive-events HTTP/1.1
+```
+
+#### Response
+
+```json
+{
+  "drives": ["b6108553462e0839383f0ee5400371e0"]
+}
+```
+
 ### POST /instances/fixers/emails
 
 Set the email of every instance from its settings email. Organization
