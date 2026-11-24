@@ -140,11 +140,14 @@ func TestHandler(t *testing.T) {
 	t.Run("RemoveAndRestore", func(t *testing.T) {
 		require.NoError(t, h.Handle(ctx, ensure(map[string]any{"externalId": "doc-3", "name": "C.docs-note"})))
 		fileID := pub.last(t).FileID
-		trash := amqp.Delivery{RoutingKey: RoutingKeyTrash, Body: mustJSON(t, map[string]any{"instance": inst.Domain, "fileId": fileID})}
+		trash := amqp.Delivery{RoutingKey: RoutingKeyTrash, Body: mustJSON(t, map[string]any{"instance": inst.Domain, "fileId": fileID, "app": "docs-side-service"})}
 		require.NoError(t, h.Handle(ctx, trash))
 		file, err := inst.VFS().FileByID(fileID)
 		require.NoError(t, err)
 		assert.True(t, file.Trashed)
+		// the write is marked as the service's, for the consumers of the file events
+		apps := file.CozyMetadata.UpdatedByApps
+		assert.Equal(t, "docs-side-service", apps[len(apps)-1].Slug)
 		assert.Equal(t, "doc-3", pub.last(t).ExternalID)
 		// already in the trash: nothing changes
 		require.NoError(t, h.Handle(ctx, trash))

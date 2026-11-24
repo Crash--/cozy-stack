@@ -83,7 +83,7 @@ func (h *Handler) Handle(ctx context.Context, d amqp.Delivery) error {
 		data.Gone, err = Remove(inst, cmd.FileID)
 	case RoutingKeyTrash:
 		var file *vfs.FileDoc
-		file, err = Trash(inst, cmd.FileID)
+		file, err = Trash(inst, cmd.FileID, cmd.App)
 		if err == nil && file == nil {
 			data.Gone = true
 		} else if err == nil {
@@ -92,7 +92,7 @@ func (h *Handler) Handle(ctx context.Context, d amqp.Delivery) error {
 		}
 	case RoutingKeyRestore:
 		var file *vfs.FileDoc
-		file, err = Restore(inst, cmd.FileID)
+		file, err = Restore(inst, cmd.FileID, cmd.App)
 		if err == nil && file == nil {
 			data.Gone = true
 		} else if err == nil {
@@ -274,7 +274,7 @@ func Remove(inst *instance.Instance, fileID string) (bool, error) {
 // Trash puts a pointer in the trash of Drive, where its owner can restore it.
 // It returns nil when the file is gone, and the file unchanged when it is
 // already in the trash.
-func Trash(inst *instance.Instance, fileID string) (*vfs.FileDoc, error) {
+func Trash(inst *instance.Instance, fileID, app string) (*vfs.FileDoc, error) {
 	fs := inst.VFS()
 	file, err := fs.FileByID(fileID)
 	if os.IsNotExist(err) || couchdb.IsNotFoundError(err) {
@@ -286,12 +286,25 @@ func Trash(inst *instance.Instance, fileID string) (*vfs.FileDoc, error) {
 	if file.Trashed {
 		return file, nil
 	}
+	markWrite(inst, file, app)
 	return vfs.TrashFile(fs, file)
+}
+
+// markWrite names the service in the file, so the consumers of the file events
+// tell its writes from the ones of a person.
+func markWrite(inst *instance.Instance, file *vfs.FileDoc, app string) {
+	if app == "" {
+		return
+	}
+	if file.CozyMetadata == nil {
+		file.CozyMetadata = vfs.NewCozyMetadata(inst.PageURL("/", nil))
+	}
+	file.CozyMetadata.UpdatedByApp(&metadata.UpdatedByAppEntry{Slug: app, Date: time.Now(), Instance: inst.PageURL("/", nil)})
 }
 
 // Restore takes a pointer out of the trash. It returns nil when the file is
 // gone, and the file unchanged when it is not in the trash.
-func Restore(inst *instance.Instance, fileID string) (*vfs.FileDoc, error) {
+func Restore(inst *instance.Instance, fileID, app string) (*vfs.FileDoc, error) {
 	fs := inst.VFS()
 	file, err := fs.FileByID(fileID)
 	if os.IsNotExist(err) || couchdb.IsNotFoundError(err) {
@@ -303,5 +316,6 @@ func Restore(inst *instance.Instance, fileID string) (*vfs.FileDoc, error) {
 	if !file.Trashed {
 		return file, nil
 	}
+	markWrite(inst, file, app)
 	return vfs.RestoreFile(fs, file)
 }
