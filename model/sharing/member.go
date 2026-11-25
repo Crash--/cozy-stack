@@ -1277,7 +1277,6 @@ func (s *Sharing) DowngradeToReadOnly(inst *instance.Instance, creds *APICredent
 	if err := couchdb.UpdateDoc(inst, s); err != nil {
 		return err
 	}
-	s.emitMember(inst, memberUpdated, nil)
 
 	s.pushJob(inst, "share-replicate")
 	if s.FirstFilesRule() != nil {
@@ -1388,11 +1387,7 @@ func (s *Sharing) UpgradeToReadWrite(inst *instance.Instance, creds *APICredenti
 	s.Credentials[0].XorKey = creds.XorKey
 	s.Credentials[0].AccessToken = creds.AccessToken
 	s.Credentials[0].Client = creds.Client
-	if err := couchdb.UpdateDoc(inst, s); err != nil {
-		return err
-	}
-	s.emitMember(inst, memberUpdated, nil)
-	return nil
+	return couchdb.UpdateDoc(inst, s)
 }
 
 // DelegateRemoveReadOnlyFlag is used by a recipient to ask the sharer to

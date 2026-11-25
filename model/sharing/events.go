@@ -11,16 +11,12 @@ const (
 	memberRemoved = driveevents.MemberRemoved
 )
 
-// emitMember publishes a sharing.member event for m, or for the recipient this
-// instance is when m is nil.
+// emitMember publishes a sharing.member event for m. Only the owner's instance
+// publishes: it learns every change of a member, and a recipient's instance
+// would publish the same change a second time.
 func (s *Sharing) emitMember(inst *instance.Instance, eventType string, m *Member) {
-	if m == nil {
-		for i := range s.Members {
-			if i > 0 && s.Members[i].Instance != "" {
-				m = &s.Members[i]
-				break
-			}
-		}
+	if !s.Owner {
+		return
 	}
 	data := &driveevents.Member{
 		SharingID: s.SID,
@@ -29,6 +25,9 @@ func (s *Sharing) emitMember(inst *instance.Instance, eventType string, m *Membe
 		Drive:     s.Drive,
 		FileIDs:   []string{},
 		Name:      s.Description,
+		Member:    m.Instance,
+		ReadOnly:  m.ReadOnly,
+		Status:    m.Status,
 	}
 	if len(s.Members) > 0 {
 		data.Sharer = s.Members[0].Instance
@@ -36,21 +35,16 @@ func (s *Sharing) emitMember(inst *instance.Instance, eventType string, m *Membe
 	if rule := s.FirstFilesRule(); rule != nil {
 		data.FileIDs = rule.Values
 	}
-	if m != nil {
-		data.Member = m.Instance
-		data.ReadOnly = m.ReadOnly
-		data.Status = m.Status
-	}
-	driveevents.Emit(inst, eventType, data)
+	emitEvent(inst, eventType, data)
 }
+
+// emitEvent is replaced by the tests.
+var emitEvent = driveevents.Emit
 
 // EmitMembers publishes a sharing.member.updated event for every recipient of
 // the sharing, as the owner knows them: the initial state of a consumer that
 // missed the events, or a resynchronisation.
 func (s *Sharing) EmitMembers(inst *instance.Instance) {
-	if !s.Owner {
-		return
-	}
 	for i := range s.Members {
 		if i > 0 {
 			s.emitMember(inst, memberUpdated, &s.Members[i])

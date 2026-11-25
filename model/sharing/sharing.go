@@ -854,11 +854,7 @@ func (s *Sharing) RevokeRecipientBySelf(inst *instance.Instance, sharingDirTrash
 		}
 	}
 
-	if err := couchdb.UpdateDoc(inst, s); err != nil {
-		return err
-	}
-	s.emitMember(inst, memberRemoved, nil)
-	return nil
+	return couchdb.UpdateDoc(inst, s)
 }
 
 // RemoveTriggers remove all the triggers associated to this sharing
@@ -956,9 +952,6 @@ func (s *Sharing) RevokeByNotification(inst *instance.Instance) error {
 		}
 
 		err := couchdb.UpdateDoc(inst, s)
-		if err == nil {
-			s.emitMember(inst, memberRemoved, nil)
-		}
 		if err == nil || !couchdb.IsConflictError(err) {
 			break
 		}
