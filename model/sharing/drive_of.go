@@ -24,12 +24,15 @@ func init() {
 
 // DriveOf returns the id of the shared drive owned by the instance whose root
 // directory holds the file, or "" when the file is in no drive.
+//
+// It reads the index directly: the VFS calls FileChanged while it holds its
+// lock, and its own DirByID would wait for that lock forever.
 func DriveOf(inst *instance.Instance, doc *vfs.FileDoc) string {
 	drives, err := ListDrives(inst)
 	if err != nil {
 		return ""
 	}
-	fs := inst.VFS()
+	fs := vfs.NewCouchdbIndexer(inst)
 	fpath, err := doc.Path(fs)
 	if err != nil {
 		return ""
