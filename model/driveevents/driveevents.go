@@ -77,9 +77,16 @@ type File struct {
 	// UpdatedByApps are the slugs of the apps that wrote the file, the last
 	// one last: a consumer recognizes its own writes.
 	UpdatedByApps []string `json:"updated_by_apps,omitempty"`
+	// DriveID is the shared drive of this instance holding the file, if any.
+	DriveID string `json:"drive_id,omitempty"`
 	// From is the file it was copied or moved from.
 	From *File `json:"from,omitempty"`
 }
+
+// DriveOf names the shared drive owned by the instance whose root holds the
+// file, or "" outside any drive. Set by the sharing package, which this one
+// cannot import.
+var DriveOf func(db prefixer.Prefixer, doc *vfs.FileDoc) string
 
 // Member is the data of the sharing.member events.
 type Member struct {
@@ -161,29 +168,28 @@ func fileChanged(db prefixer.Prefixer, olddoc, newdoc *vfs.FileDoc) {
 	if !IsPointer(olddoc) && !IsPointer(newdoc) {
 		return
 	}
-	domain := db.DomainName()
 	switch {
 	case olddoc == nil:
 		if from := newdoc.CopiedFrom(); from != nil {
-			emit(db, FileCopied, fileData(domain, newdoc, from))
+			emit(db, FileCopied, fileData(db, newdoc, from))
 		} else {
-			emit(db, FileCreated, fileData(domain, newdoc, nil))
+			emit(db, FileCreated, fileData(db, newdoc, nil))
 		}
 	case newdoc == nil:
 		if to := olddoc.MovedTo(); to != nil {
-			moved := fileData(domain, olddoc, nil)
-			emit(db, FileMoved, &File{ID: to.ID, Instance: to.Instance, Name: olddoc.DocName, Mime: olddoc.Mime, Metadata: olddoc.Metadata, From: moved})
+			moved := fileData(db, olddoc, nil)
+			emit(db, FileMoved, &File{ID: to.ID, Instance: to.Instance, DirID: to.DirID, DriveID: to.DriveID, Name: olddoc.DocName, Mime: olddoc.Mime, Metadata: olddoc.Metadata, From: moved})
 		} else {
-			emit(db, FileDestroyed, fileData(domain, olddoc, nil))
+			emit(db, FileDestroyed, fileData(db, olddoc, nil))
 		}
 	case !olddoc.Trashed && newdoc.Trashed:
-		emit(db, FileTrashed, fileData(domain, newdoc, nil))
+		emit(db, FileTrashed, fileData(db, newdoc, nil))
 	case olddoc.Trashed && !newdoc.Trashed:
-		emit(db, FileRestored, fileData(domain, newdoc, nil))
+		emit(db, FileRestored, fileData(db, newdoc, nil))
 	case olddoc.DirID != newdoc.DirID:
-		emit(db, FileMoved, fileData(domain, newdoc, &vfs.FileRef{ID: olddoc.ID(), Instance: domain}))
+		emit(db, FileMoved, fileData(db, newdoc, &vfs.FileRef{ID: olddoc.ID(), Instance: db.DomainName()}))
 	case olddoc.DocName != newdoc.DocName || metadataChanged(olddoc.Metadata, newdoc.Metadata):
-		emit(db, FileUpdated, fileData(domain, newdoc, nil))
+		emit(db, FileUpdated, fileData(db, newdoc, nil))
 	}
 }
 
@@ -196,8 +202,12 @@ func metadataChanged(old, updated vfs.Metadata) bool {
 	return false
 }
 
-func fileData(domain string, doc *vfs.FileDoc, from *vfs.FileRef) *File {
+func fileData(db prefixer.Prefixer, doc *vfs.FileDoc, from *vfs.FileRef) *File {
+	domain := db.DomainName()
 	f := &File{ID: doc.ID(), Instance: domain, DirID: doc.DirID, Name: doc.DocName, Mime: doc.Mime, Metadata: doc.Metadata}
+	if DriveOf != nil && !doc.Trashed {
+		f.DriveID = DriveOf(db, doc)
+	}
 	if doc.CozyMetadata != nil {
 		for _, entry := range doc.CozyMetadata.UpdatedByApps {
 			f.UpdatedByApps = append(f.UpdatedByApps, entry.Slug)

@@ -73,10 +73,13 @@ type FileDoc struct {
 	// structure DirOrFileDoc in model/vfs/vfs.go and client/files.go.
 }
 
-// FileRef names a file on an instance.
+// FileRef names a file on an instance. DirID and DriveID say where it is
+// there, when known.
 type FileRef struct {
 	ID       string `json:"id"`
 	Instance string `json:"instance,omitempty"`
+	DirID    string `json:"dir_id,omitempty"`
+	DriveID  string `json:"drive_id,omitempty"`
 }
 
 // MarkCopyOf records that this new file is a copy of another one.

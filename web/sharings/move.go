@@ -509,7 +509,7 @@ func moveFileSameStackCore(srcInst *instance.Instance, destInst *instance.Instan
 		return nil, err
 	}
 	if deleteSource {
-		srcFile.MarkMovedTo(vfs.FileRef{ID: newFileDoc.ID(), Instance: destInst.Domain})
+		srcFile.MarkMovedTo(vfs.FileRef{ID: newFileDoc.ID(), Instance: destInst.Domain, DirID: newFileDoc.DirID, DriveID: sharing.DriveOf(destInst, newFileDoc)})
 		if err := deleteSourceFile(srcInst.VFS(), srcFile); err != nil {
 			return nil, err
 		}

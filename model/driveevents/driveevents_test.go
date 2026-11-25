@@ -19,7 +19,13 @@ func TestFileChanged(t *testing.T) {
 	emit = func(_ prefixer.Prefixer, eventType string, data any) {
 		got = append(got, emitted{eventType, data.(*File)})
 	}
-	t.Cleanup(func() { emit = Emit })
+	DriveOf = func(_ prefixer.Prefixer, doc *vfs.FileDoc) string {
+		if doc.DirID == "d2" {
+			return "drive-1"
+		}
+		return ""
+	}
+	t.Cleanup(func() { emit = Emit; DriveOf = nil })
 	db := prefixer.NewPrefixer(0, "alice.example", "alice")
 
 	meta := vfs.Metadata{ExternalIDKey: "doc-1"}
@@ -32,7 +38,7 @@ func TestFileChanged(t *testing.T) {
 	copied.DocID = "f2"
 	created := &vfs.FileDoc{DocID: "f3", DocName: "new.docs-note", DirID: "d1", Metadata: meta}
 	leaving := &vfs.FileDoc{DocID: "f1", DocName: "a.docs-note", DirID: "d1", Metadata: meta}
-	leaving.MarkMovedTo(vfs.FileRef{ID: "f9", Instance: "bob.example"})
+	leaving.MarkMovedTo(vfs.FileRef{ID: "f9", Instance: "bob.example", DirID: "d9", DriveID: "drive-9"})
 	plain := &vfs.FileDoc{DocID: "p1", DocName: "report.pdf", DirID: "d1"}
 	plainRenamed := &vfs.FileDoc{DocID: "p1", DocName: "report2.pdf", DirID: "d1"}
 
@@ -55,10 +61,15 @@ func TestFileChanged(t *testing.T) {
 	}
 	assert.Equal(t, []string{FileTrashed, FileRestored, FileMoved, FileUpdated, FileCopied, FileCreated, FileDestroyed, FileMoved}, types)
 	assert.Equal(t, &File{ID: "f1", Instance: "alice.example"}, got[2].file.From)
+	// Moved into the folder of a drive: the event names the drive
+	assert.Equal(t, "drive-1", got[2].file.DriveID)
+	assert.Equal(t, "", got[3].file.DriveID)
 	assert.Equal(t, "b.docs-note", got[3].file.Name)
 	assert.Equal(t, &File{ID: "f1", Instance: "alice.example"}, got[4].file.From)
 	assert.Nil(t, got[5].file.From)
 	assert.Equal(t, "f9", got[7].file.ID)
 	assert.Equal(t, "bob.example", got[7].file.Instance)
+	assert.Equal(t, "d9", got[7].file.DirID)
+	assert.Equal(t, "drive-9", got[7].file.DriveID)
 	assert.Equal(t, &File{ID: "f1", Instance: "alice.example", DirID: "d1", Name: "a.docs-note", Metadata: meta}, got[7].file.From)
 }
