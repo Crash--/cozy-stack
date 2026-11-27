@@ -55,3 +55,42 @@ func DriveOf(inst *instance.Instance, doc *vfs.FileDoc) string {
 	}
 	return ""
 }
+
+// WritableDriveOfDir returns the id of the shared drive owned by the instance
+// whose root is the directory or one of its parents, when member (a domain)
+// is a ready member of it with write access; "" otherwise.
+func WritableDriveOfDir(inst *instance.Instance, dirID, member string) string {
+	drives, err := ListDrives(inst)
+	if err != nil {
+		return ""
+	}
+	fs := vfs.NewCouchdbIndexer(inst)
+	dir, err := fs.DirByID(dirID)
+	if err != nil {
+		return ""
+	}
+	for _, s := range drives {
+		if !s.Owner || !s.HasDirectoryDriveRoot() {
+			continue
+		}
+		rootID, err := s.DriveRootID()
+		if err != nil {
+			continue
+		}
+		root, err := fs.DirByID(rootID)
+		if err != nil || (dir.Fullpath != root.Fullpath && !strings.HasPrefix(dir.Fullpath, root.Fullpath+"/")) {
+			continue
+		}
+		for i, m := range s.Members {
+			if i > 0 && hostOf(m.Instance) == hostOf(member) && m.Status == MemberStatusReady && !m.ReadOnly {
+				return s.SID
+			}
+		}
+	}
+	return ""
+}
+
+func hostOf(instanceURL string) string {
+	host := strings.TrimPrefix(strings.TrimPrefix(instanceURL, "https://"), "http://")
+	return strings.TrimSuffix(host, "/")
+}

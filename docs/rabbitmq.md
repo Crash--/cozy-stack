@@ -583,6 +583,44 @@ counts the files that members create, update and send to the trash through
   default. The counts are held in Redis, so a Stack without Redis publishes
   no digest.
 
+#### Pointers
+
+The queue `stack.drive.pointers` (exchange `drive`, routing key
+`drive.pointer.batch`) receives the commands of a side service on pointers,
+on any instances, by batches of at most 200 items:
+
+```json
+{
+  "app": "docs-side-service",
+  "mime": "application/vnd.twake.docs",
+  "folder": "Docs",
+  "items": [
+    { "op": "ensure", "instance": "bob.example.net", "externalId": "0b85f827", "name": "Plan.docs-note", "role": "reader", "asOf": "2026-11-27T10:00:00.000Z" },
+    { "op": "ensure", "instance": "acme.example.net", "externalId": "0b85f827", "name": "Plan.docs-note", "role": "editor", "asOf": "2026-11-27T10:00:00.000Z",
+      "dirId": "b6108553", "member": "alice.example.net", "fallback": { "instance": "alice.example.net", "folder": "Docs" } },
+    { "op": "remove", "instance": "erin.example.net", "externalId": "583dca89", "asOf": "2026-11-27T10:00:00.000Z" }
+  ]
+}
+```
+
+- An item names the pointer by `fileId`, or else by `externalId`: an
+  instance holds at most one pointer per document.
+- `ensure` creates the pointer, or brings it to its name, role
+  (`metadata.externalRole`) and folder (`dirId`, else `folder` at the root,
+  created if missing). A pointer in the trash stays there. With `member`, the
+  pointer goes to `dirId` only if `member` is a ready member with write access
+  of a shared drive of the instance holding `dirId`; else the item is applied
+  to `fallback`. With `onlyIfExists`, it updates the pointer but never creates
+  one.
+- `remove` destroys the pointer, `trash` and `restore` move it in and out of
+  the trash. Each write names `app` in `cozyMetadata.updatedByApps`.
+- `asOf` is when the service read what the command brings. The Stack keeps
+  the `asOf` of the last command applied in `metadata.externalAsOf`, and
+  ignores an older command. The writes of a person leave it as it is.
+- An item that can never be applied (unknown instance, missing field) is
+  logged and dropped. Any other failure sends the whole batch back to the
+  queue; the items already applied then change nothing. There is no reply.
+
 ### Lifecycle
 
 On startup, if `rabbitmq.enabled` is true:

@@ -10,7 +10,9 @@ import (
 
 	"github.com/cozy/cozy-stack/model/instance"
 	"github.com/cozy/cozy-stack/model/instance/lifecycle"
+	"github.com/cozy/cozy-stack/model/sharing"
 	"github.com/cozy/cozy-stack/model/vfs"
+	"github.com/cozy/cozy-stack/pkg/config/config"
 	"github.com/cozy/cozy-stack/pkg/consts"
 	"github.com/cozy/cozy-stack/pkg/couchdb"
 	"github.com/cozy/cozy-stack/pkg/couchdb/mango"
@@ -36,117 +38,165 @@ const ExternalIDKey = "externalId"
 // on the document.
 const ExternalRoleKey = "externalRole"
 
-// ReadyData is the data of com.twake.drive.pointer.ready.v1.
-type ReadyData struct {
-	RequestID  string `json:"requestId,omitempty"`
-	Command    string `json:"command"`
-	Instance   string `json:"instance"`
-	FileID     string `json:"fileId,omitempty"`
-	DirID      string `json:"dirId,omitempty"`
-	ExternalID string `json:"externalId,omitempty"`
-	// Gone tells that remove or restore found no file: nothing to do.
-	Gone bool `json:"gone,omitempty"`
+// ExternalAsOfKey is the metadata key of the asOf of the last command applied
+// to the pointer.
+const ExternalAsOfKey = "externalAsOf"
+
+// Outcome is what an item did.
+type Outcome string
+
+// The outcomes of an item.
+const (
+	Done  Outcome = "ok"
+	Stale Outcome = "stale"
+	Gone  Outcome = "gone"
+)
+
+// errDefinitive marks an item that a redelivery cannot fix.
+var errDefinitive = errors.New("definitive")
+
+// Handler applies the batches of pointer commands.
+type Handler struct{}
+
+// NewHandler returns the handler of the queue. The commands have no reply.
+func NewHandler(_ messaging.Publisher) *Handler {
+	return &Handler{}
 }
 
-// Handler applies the pointer commands.
-type Handler struct {
-	publisher messaging.Publisher
-}
-
-// NewHandler returns a handler replying with this publisher.
-func NewHandler(publisher messaging.Publisher) *Handler {
-	return &Handler{publisher: publisher}
-}
-
-// Handle applies one command and publishes its reply.
-func (h *Handler) Handle(ctx context.Context, d amqp.Delivery) error {
-	cmd, err := ParseCommand(d.RoutingKey, d.Body)
+// Handle applies every item of a batch. An item that can never be applied is
+// logged and counted as handled; any other failure asks for the redelivery of
+// the whole batch, whose items already applied then change nothing.
+func (h *Handler) Handle(_ context.Context, d amqp.Delivery) error {
+	if d.RoutingKey != RoutingKeyBatch {
+		return malformed("unknown routing key %s", d.RoutingKey)
+	}
+	b, err := ParseBatch(d.Body)
 	if err != nil {
 		return err
 	}
-	inst, err := lifecycle.GetInstance(cmd.Instance)
-	if err != nil {
-		if errors.Is(err, instance.ErrNotFound) {
-			return fmt.Errorf("%s: %w: unknown instance %s", d.RoutingKey, rabbitmq.ErrMalformed, cmd.Instance)
-		}
-		return fmt.Errorf("%s: %w", d.RoutingKey, err)
-	}
-	data := ReadyData{RequestID: cmd.RequestID, Command: d.RoutingKey, Instance: inst.Domain, ExternalID: cmd.ExternalID}
-	switch d.RoutingKey {
-	case RoutingKeyEnsure:
-		var file *vfs.FileDoc
-		file, err = Ensure(inst, cmd)
-		if err == nil {
-			data.FileID, data.DirID = file.ID(), file.DirID
-		}
-	case RoutingKeyRemove:
-		data.Gone, err = Remove(inst, cmd.FileID)
-	case RoutingKeyTrash:
-		var file *vfs.FileDoc
-		file, err = Trash(inst, cmd.FileID, cmd.App)
-		if err == nil && file == nil {
-			data.Gone = true
-		} else if err == nil {
-			data.FileID, data.DirID = file.ID(), file.DirID
-			data.ExternalID, _ = file.Metadata[ExternalIDKey].(string)
-		}
-	case RoutingKeyRestore:
-		var file *vfs.FileDoc
-		file, err = Restore(inst, cmd.FileID, cmd.App)
-		if err == nil && file == nil {
-			data.Gone = true
-		} else if err == nil {
-			data.FileID, data.DirID = file.ID(), file.DirID
-			data.ExternalID, _ = file.Metadata[ExternalIDKey].(string)
+	var transient error
+	for i := range b.Items {
+		it := &b.Items[i]
+		outcome, err := Apply(b, it)
+		switch {
+		case err == nil:
+			log.WithDomain(it.Instance).Debugf("%s %s: %s", it.Op, it.ExternalID, outcome)
+		case errors.Is(err, errDefinitive):
+			log.WithDomain(it.Instance).Warnf("%s %s dropped: %s", it.Op, it.ExternalID, err)
+		default:
+			log.WithDomain(it.Instance).Errorf("%s %s failed: %s", it.Op, it.ExternalID, err)
+			transient = err
 		}
 	}
-	if err != nil {
-		return fmt.Errorf("%s on %s: %w", d.RoutingKey, inst.Domain, err)
+	if transient != nil {
+		return fmt.Errorf("%s: %w", RoutingKeyBatch, transient)
 	}
-	req, err := rabbitmq.NewActivityRequest(inst.ContextName, RoutingKeyReady, inst.OrgID, data)
-	if err != nil {
-		return err
-	}
-	if err := h.publisher.Publish(ctx, req); err != nil {
-		return fmt.Errorf("%s: reply: %w", d.RoutingKey, err)
-	}
-	log.WithDomain(inst.Domain).Infof("%s %s: %s", d.RoutingKey, cmd.ExternalID, data.FileID)
 	return nil
 }
 
-// Ensure creates the pointer of a document, or brings an existing one to the
-// wanted name, folder and metadata. The pointer is found by fileId when given,
-// else by externalId. A pointer in the trash is left there.
-func Ensure(inst *instance.Instance, cmd *Command) (*vfs.FileDoc, error) {
-	fs := inst.VFS()
-	file, err := find(inst, cmd)
-	if err != nil {
-		return nil, err
+// Apply applies one item, under a lock on its document on its instance.
+func Apply(b *Batch, it *Item) (Outcome, error) {
+	if err := it.check(b); err != nil {
+		return "", fmt.Errorf("%w: %s", errDefinitive, err)
 	}
-	meta := vfs.Metadata{ExternalIDKey: cmd.ExternalID}
-	if cmd.Role != "" {
-		meta[ExternalRoleKey] = cmd.Role
+	inst, err := lifecycle.GetInstance(it.Instance)
+	if err != nil {
+		if errors.Is(err, instance.ErrNotFound) {
+			return "", fmt.Errorf("%w: unknown instance %s", errDefinitive, it.Instance)
+		}
+		return "", err
+	}
+	if it.Op == OpEnsure && it.Member != "" && it.DirID != "" {
+		if sharing.WritableDriveOfDir(inst, it.DirID, it.Member) == "" {
+			if it.Fallback == nil {
+				return "", fmt.Errorf("%w: %s writes in no drive of %s holding %s", errDefinitive, it.Member, it.Instance, it.DirID)
+			}
+			fb := *it
+			fb.Instance, fb.DirID, fb.Member, fb.Fallback = it.Fallback.Instance, "", "", nil
+			fbBatch := *b
+			fbBatch.Folder = it.Fallback.Folder
+			return Apply(&fbBatch, &fb)
+		}
+	}
+	mu := config.Lock().ReadWrite(inst, "pointers/"+it.ExternalID)
+	if err := mu.Lock(); err != nil {
+		return "", err
+	}
+	defer mu.Unlock()
+
+	file, err := find(inst, it.FileID, it.ExternalID)
+	if err != nil {
+		return "", err
+	}
+	if file != nil && olderThanApplied(file, it.AsOf) {
+		return Stale, nil
+	}
+	switch it.Op {
+	case OpEnsure:
+		if file == nil && it.OnlyIfExists {
+			return Gone, nil
+		}
+		_, err = Ensure(inst, b, it, file)
+		return Done, err
+	case OpRemove:
+		if file == nil {
+			return Gone, nil
+		}
+		return Done, inst.VFS().DestroyFile(file)
+	case OpTrash, OpRestore:
+		if file == nil {
+			return Gone, nil
+		}
+		if (it.Op == OpTrash) == file.Trashed {
+			return Done, nil
+		}
+		markWrite(inst, file, b.App, it.AsOf)
+		if it.Op == OpTrash {
+			_, err = vfs.TrashFile(inst.VFS(), file)
+		} else {
+			_, err = vfs.RestoreFile(inst.VFS(), file)
+		}
+		return Done, err
+	}
+	return "", fmt.Errorf("%w: unknown op %q", errDefinitive, it.Op)
+}
+
+// olderThanApplied tells if asOf is older than the last command applied to
+// the pointer. The writes of a person leave externalAsOf as it is.
+func olderThanApplied(file *vfs.FileDoc, asOf time.Time) bool {
+	raw, _ := file.Metadata[ExternalAsOfKey].(string)
+	applied, err := time.Parse(time.RFC3339Nano, raw)
+	return err == nil && asOf.Before(applied)
+}
+
+// Ensure creates the pointer of a document, or brings the existing one to the
+// wanted name, folder and metadata. A pointer in the trash is left there.
+func Ensure(inst *instance.Instance, b *Batch, it *Item, file *vfs.FileDoc) (*vfs.FileDoc, error) {
+	fs := inst.VFS()
+	meta := vfs.Metadata{ExternalIDKey: it.ExternalID, ExternalAsOfKey: it.AsOf.UTC().Format(time.RFC3339Nano)}
+	if it.Role != "" {
+		meta[ExternalRoleKey] = it.Role
 	}
 	if file != nil {
-		return update(fs, file, cmd, meta)
+		return update(inst, file, b, it, meta)
 	}
-	dirID := cmd.DirID
+	dirID := it.DirID
 	if dirID == "" {
-		dir, err := vfs.MkdirAll(fs, "/"+cmd.Folder)
+		dir, err := vfs.MkdirAll(fs, "/"+b.Folder)
 		if err != nil {
 			return nil, err
 		}
 		dirID = dir.ID()
 	}
 	now := time.Now()
-	doc, err := vfs.NewFileDoc(cmd.Name, dirID, 0, nil, cmd.Mime, "", now, false, false, false, nil)
+	doc, err := vfs.NewFileDoc(it.Name, dirID, 0, nil, b.Mime, "", now, false, false, false, nil)
 	if err != nil {
 		return nil, err
 	}
 	doc.Metadata = meta
 	doc.CozyMetadata = vfs.NewCozyMetadata(inst.PageURL("/", nil))
-	doc.CozyMetadata.CreatedByApp = cmd.App
-	doc.CozyMetadata.UpdatedByApp(&metadata.UpdatedByAppEntry{Slug: cmd.App, Date: now, Instance: inst.PageURL("/", nil)})
+	doc.CozyMetadata.CreatedByApp = b.App
+	doc.CozyMetadata.UpdatedByApp(&metadata.UpdatedByAppEntry{Slug: b.App, Date: now, Instance: inst.PageURL("/", nil)})
 	doc.DocName = uniqueName(fs, dirID, doc.DocName)
 	f, err := fs.CreateFile(doc, nil)
 	if err != nil {
@@ -158,18 +208,18 @@ func Ensure(inst *instance.Instance, cmd *Command) (*vfs.FileDoc, error) {
 	return doc, nil
 }
 
-func find(inst *instance.Instance, cmd *Command) (*vfs.FileDoc, error) {
-	fs := inst.VFS()
-	if cmd.FileID != "" {
-		file, err := fs.FileByID(cmd.FileID)
+func find(inst *instance.Instance, fileID, externalID string) (*vfs.FileDoc, error) {
+	if fileID != "" {
+		file, err := inst.VFS().FileByID(fileID)
 		if err == nil {
 			return file, nil
 		}
 		if !os.IsNotExist(err) && !couchdb.IsNotFoundError(err) {
 			return nil, err
 		}
+		return nil, nil
 	}
-	return FindByExternalID(inst, cmd.ExternalID)
+	return FindByExternalID(inst, externalID)
 }
 
 var externalIDIndex = mango.MakeIndex(consts.Files, "by-external-id", mango.IndexDef{Fields: []string{"metadata.externalId"}})
@@ -180,58 +230,59 @@ func FindByExternalID(inst *instance.Instance, externalID string) (*vfs.FileDoc,
 	if externalID == "" {
 		return nil, nil
 	}
-	if err := couchdb.DefineIndex(inst, externalIDIndex); err != nil {
+	files, err := findPointers(inst, mango.Equal("metadata.externalId", externalID), 2)
+	if err != nil || len(files) == 0 {
 		return nil, err
-	}
-	var files []*vfs.FileDoc
-	req := &couchdb.FindRequest{
-		UseIndex: "by-external-id",
-		Selector: mango.Equal("metadata.externalId", externalID),
-		Limit:    2,
-	}
-	if err := couchdb.FindDocs(inst, consts.Files, req, &files); err != nil {
-		return nil, err
-	}
-	if len(files) == 0 {
-		return nil, nil
 	}
 	return files[0], nil
 }
 
-func update(fs vfs.VFS, file *vfs.FileDoc, cmd *Command, meta vfs.Metadata) (*vfs.FileDoc, error) {
-	patch := &vfs.DocPatch{}
-	changed := false
-	if file.Metadata == nil || file.Metadata[ExternalIDKey] != meta[ExternalIDKey] || file.Metadata[ExternalRoleKey] != meta[ExternalRoleKey] {
-		merged := vfs.Metadata{}
-		for k, v := range file.Metadata {
-			merged[k] = v
-		}
-		for k, v := range meta {
-			merged[k] = v
-		}
-		if cmd.Role == "" {
-			delete(merged, ExternalRoleKey)
-		}
-		patch.Metadata = &merged
-		changed = true
+// List returns every pointer of the instance.
+func List(inst *instance.Instance) ([]*vfs.FileDoc, error) {
+	return findPointers(inst, mango.Exists("metadata.externalId"), 10000)
+}
+
+func findPointers(inst *instance.Instance, selector mango.Filter, limit int) ([]*vfs.FileDoc, error) {
+	if err := couchdb.DefineIndex(inst, externalIDIndex); err != nil {
+		return nil, err
 	}
-	if !file.Trashed && file.DocName != cmd.Name {
-		name := uniqueName(fs, file.DirID, cmd.Name)
+	var files []*vfs.FileDoc
+	req := &couchdb.FindRequest{UseIndex: "by-external-id", Selector: selector, Limit: limit}
+	if err := couchdb.FindDocs(inst, consts.Files, req, &files); err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func update(inst *instance.Instance, file *vfs.FileDoc, b *Batch, it *Item, meta vfs.Metadata) (*vfs.FileDoc, error) {
+	fs := inst.VFS()
+	patch := &vfs.DocPatch{}
+	merged := vfs.Metadata{}
+	for k, v := range file.Metadata {
+		merged[k] = v
+	}
+	for k, v := range meta {
+		merged[k] = v
+	}
+	if it.Role == "" {
+		delete(merged, ExternalRoleKey)
+	}
+	// The asOf is written even when nothing else changes: an older command
+	// arriving later must find it
+	patch.Metadata = &merged
+	if !file.Trashed && file.DocName != it.Name {
+		name := uniqueName(fs, file.DirID, it.Name)
 		if name != file.DocName {
 			patch.Name = &name
-			changed = true
 		}
 	}
-	if !file.Trashed && cmd.DirID != "" && file.DirID != cmd.DirID {
-		dirID := cmd.DirID
+	if !file.Trashed && it.DirID != "" && file.DirID != it.DirID {
+		dirID := it.DirID
 		patch.DirID = &dirID
-		changed = true
-	}
-	if !changed {
-		return file, nil
 	}
 	now := time.Now()
 	patch.UpdatedAt = &now
+	markWrite(inst, file, b.App, it.AsOf)
 	return vfs.ModifyFileMetadata(fs, file, patch)
 }
 
@@ -258,64 +309,15 @@ func uniqueName(fs vfs.VFS, dirID, name string) string {
 	return candidate
 }
 
-// Remove destroys a pointer. It returns true when the file is already gone.
-func Remove(inst *instance.Instance, fileID string) (bool, error) {
-	fs := inst.VFS()
-	file, err := fs.FileByID(fileID)
-	if os.IsNotExist(err) || couchdb.IsNotFoundError(err) {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return false, fs.DestroyFile(file)
-}
-
-// Trash puts a pointer in the trash of Drive, where its owner can restore it.
-// It returns nil when the file is gone, and the file unchanged when it is
-// already in the trash.
-func Trash(inst *instance.Instance, fileID, app string) (*vfs.FileDoc, error) {
-	fs := inst.VFS()
-	file, err := fs.FileByID(fileID)
-	if os.IsNotExist(err) || couchdb.IsNotFoundError(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if file.Trashed {
-		return file, nil
-	}
-	markWrite(inst, file, app)
-	return vfs.TrashFile(fs, file)
-}
-
 // markWrite names the service in the file, so the consumers of the file events
 // tell its writes from the ones of a person.
-func markWrite(inst *instance.Instance, file *vfs.FileDoc, app string) {
-	if app == "" {
-		return
-	}
+func markWrite(inst *instance.Instance, file *vfs.FileDoc, app string, asOf time.Time) {
 	if file.CozyMetadata == nil {
 		file.CozyMetadata = vfs.NewCozyMetadata(inst.PageURL("/", nil))
 	}
 	file.CozyMetadata.UpdatedByApp(&metadata.UpdatedByAppEntry{Slug: app, Date: time.Now(), Instance: inst.PageURL("/", nil)})
-}
-
-// Restore takes a pointer out of the trash. It returns nil when the file is
-// gone, and the file unchanged when it is not in the trash.
-func Restore(inst *instance.Instance, fileID, app string) (*vfs.FileDoc, error) {
-	fs := inst.VFS()
-	file, err := fs.FileByID(fileID)
-	if os.IsNotExist(err) || couchdb.IsNotFoundError(err) {
-		return nil, nil
+	if file.Metadata == nil {
+		file.Metadata = vfs.Metadata{}
 	}
-	if err != nil {
-		return nil, err
-	}
-	if !file.Trashed {
-		return file, nil
-	}
-	markWrite(inst, file, app)
-	return vfs.RestoreFile(fs, file)
+	file.Metadata[ExternalAsOfKey] = asOf.UTC().Format(time.RFC3339Nano)
 }
