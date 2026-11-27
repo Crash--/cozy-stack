@@ -166,6 +166,7 @@ func TestContacts(t *testing.T) {
 		localGroup.Path("$.attributes.name").Equal("Dupont [Friends]")
 		localGroup.Path("$.attributes.color").Equal("")
 		localGroup.Path("$.attributes.member_count").Equal(1)
+		localGroup.Value("attributes").Object().NotContainsKey("organization_id")
 		local.Value(1).Object().ValueEqual("id", jean.ID())
 		suggest("[f").Length().Equal(1)
 
@@ -205,7 +206,7 @@ func TestSuggestOrganizationGroups(t *testing.T) {
 	group.SetID(orgdirectory.GroupDocID(orgID, "it"))
 	group.M["name"] = "IT"
 	group.M["color"] = "#123456"
-	group.M[orgdirectory.DirectoryMetadataKey] = map[string]interface{}{"managed": true, "organizationId": orgID}
+	group.M[orgdirectory.DirectoryMetadataKey] = map[string]interface{}{"managed": true, "organizationId": orgID, "externalId": "it"}
 	require.NoError(t, couchdb.CreateNamedDocWithDB(org, group))
 	_, token := setup.GetTestClient(consts.Contacts + " " + consts.Groups)
 	ts := setup.GetTestServer("/contacts", Routes)
@@ -222,5 +223,8 @@ func TestSuggestOrganizationGroups(t *testing.T) {
 	result.Path("$.attributes.name").Equal("IT")
 	result.Path("$.attributes.color").Equal("#123456")
 	result.Path("$.attributes.member_count").Equal(0)
+	// The directory entry, for the apps that read its members there
+	result.Path("$.attributes.organization_id").Equal(orgID)
+	result.Path("$.attributes.external_id").Equal("it")
 	result.Value("attributes").Object().NotContainsKey(orgdirectory.DirectoryMetadataKey)
 }

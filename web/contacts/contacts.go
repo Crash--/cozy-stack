@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/cozy/cozy-stack/model/contact"
+	"github.com/cozy/cozy-stack/model/orgdirectory"
 	"github.com/cozy/cozy-stack/model/permission"
 	"github.com/cozy/cozy-stack/model/sharing"
 	"github.com/cozy/cozy-stack/pkg/consts"
@@ -89,13 +90,16 @@ func SuggestHandler(c echo.Context) error {
 	data := make([]apiSuggestion, len(suggestions))
 	for i, s := range suggestions {
 		if s.Group != nil {
-			data[i] = apiSuggestion{
-				Type: consts.Groups,
-				ID:   s.Group.ID(),
-				Attributes: map[string]interface{}{
-					"name": s.Group.Name(), "color": s.Group.Color(), "member_count": s.MemberCount,
-				},
+			attrs := map[string]interface{}{
+				"name": s.Group.Name(), "color": s.Group.Color(), "member_count": s.MemberCount,
 			}
+			// An organization group names its directory entry, for the apps
+			// that read its members from the directory
+			if dir := orgdirectory.DirectoryOf(&s.Group.JSONDoc); dir.Managed {
+				attrs["organization_id"] = dir.OrganizationID
+				attrs["external_id"] = dir.ExternalID
+			}
+			data[i] = apiSuggestion{Type: consts.Groups, ID: s.Group.ID(), Attributes: attrs}
 			continue
 		}
 		data[i] = apiSuggestion{Type: consts.Contacts}
