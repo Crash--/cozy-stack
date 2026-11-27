@@ -26,6 +26,7 @@ func (s *Sharing) emitMember(inst *instance.Instance, eventType string, m *Membe
 		FileIDs:   []string{},
 		Name:      s.Description,
 		Member:    m.Instance,
+		Email:     m.Email,
 		ReadOnly:  m.ReadOnly,
 		Status:    m.Status,
 	}

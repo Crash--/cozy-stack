@@ -2,9 +2,11 @@ package driveevents
 
 import (
 	"testing"
+	"time"
 
 	"github.com/cozy/cozy-stack/model/vfs"
 	"github.com/cozy/cozy-stack/pkg/consts"
+	"github.com/cozy/cozy-stack/pkg/metadata"
 	"github.com/cozy/cozy-stack/pkg/prefixer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -25,7 +27,15 @@ func TestFileChanged(t *testing.T) {
 		}
 		return ""
 	}
-	t.Cleanup(func() { emit = Emit; DriveOf = nil })
+	alice := &Actor{Sub: "alice", Email: "alice@example.net"}
+	realActorOfDomain := actorOfDomain
+	actorOfDomain = func(domain string) *Actor {
+		if domain == "alice.example" {
+			return alice
+		}
+		return nil
+	}
+	t.Cleanup(func() { emit = Emit; DriveOf = nil; actorOfDomain = realActorOfDomain })
 	db := prefixer.NewPrefixer(0, "alice.example", "alice")
 
 	meta := vfs.Metadata{ExternalIDKey: "doc-1"}
@@ -60,7 +70,9 @@ func TestFileChanged(t *testing.T) {
 		types[i] = e.eventType
 	}
 	assert.Equal(t, []string{FileTrashed, FileRestored, FileMoved, FileUpdated, FileCopied, FileCreated, FileDestroyed, FileMoved}, types)
-	assert.Equal(t, &File{ID: "f1", Instance: "alice.example"}, got[2].file.From)
+	// A move names the folder it left, and the owner of the instance
+	assert.Equal(t, &File{ID: "f1", Instance: "alice.example", DirID: "d1"}, got[2].file.From)
+	assert.Equal(t, alice, got[2].file.Actor)
 	// Moved into the folder of a drive: the event names the drive
 	assert.Equal(t, "drive-1", got[2].file.DriveID)
 	assert.Equal(t, "", got[3].file.DriveID)
@@ -71,5 +83,26 @@ func TestFileChanged(t *testing.T) {
 	assert.Equal(t, "bob.example", got[7].file.Instance)
 	assert.Equal(t, "d9", got[7].file.DirID)
 	assert.Equal(t, "drive-9", got[7].file.DriveID)
-	assert.Equal(t, &File{ID: "f1", Instance: "alice.example", DirID: "d1", Name: "a.docs-note", Metadata: meta}, got[7].file.From)
+	assert.Equal(t, &File{ID: "f1", Instance: "alice.example", DirID: "d1", Name: "a.docs-note", Metadata: meta, Actor: alice}, got[7].file.From)
+	assert.Equal(t, alice, got[7].file.Actor, "the person who moved it, from the instance it left")
+
+	// Moved out of a drive: the event names the drive it left
+	got = nil
+	fileChanged(db, moved, file)
+	require.Len(t, got, 1)
+	assert.Equal(t, &File{ID: "f1", Instance: "alice.example", DirID: "d2", DriveID: "drive-1"}, got[0].file.From)
+}
+
+func TestWrittenBy(t *testing.T) {
+	now := time.Now()
+	doc := &vfs.FileDoc{CozyMetadata: &vfs.FilesCozyMetadata{}}
+	doc.CozyMetadata.UpdatedByApps = []*metadata.UpdatedByAppEntry{
+		{Slug: "drive", Date: now},
+		{Slug: "docs-side-service", Date: now.Add(-time.Hour)},
+	}
+	// The entry dated at the write, not the last of the list
+	assert.Equal(t, "drive", writtenBy(doc, now))
+	// A client that names no app: the latest entry is older than the write
+	assert.Equal(t, "", writtenBy(doc, now.Add(time.Minute)))
+	assert.Equal(t, "", writtenBy(&vfs.FileDoc{}, now))
 }

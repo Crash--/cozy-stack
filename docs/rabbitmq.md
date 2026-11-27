@@ -297,6 +297,21 @@ CloudEvents read by other apps, with the event type as routing key and
   see below.
 - `com.twake.drive.folder.changed.v1`: the activity digest of an organization
   drive, see below.
+- `com.twake.drive.file.created|updated|copied|moved|trashed|restored|destroyed.v1`:
+  what happens to a pointer, a file whose `metadata.externalId` names a
+  document of another app. The data is the file (`id`, `instance`, `dir_id`,
+  `name`, `mime`, `metadata`), with:
+  - `written_by`: the app that made this write, the entry of
+    `cozyMetadata.updatedByApps` dated at the write; absent for a client
+    that names no app;
+  - `actor`: the owner of the instance (`sub`, their OIDC id, and `email`);
+    absent on an organization instance;
+  - `drive_id`: the shared drive of the instance holding the file;
+  - `from`: for a copy or a move, the source file (`id`, `instance`,
+    `dir_id`, and for a move the `drive_id` it left).
+- `com.twake.drive.sharing.member.added|updated|removed.v1`: a member of a
+  sharing changed, published by the instance of the owner, with the member's
+  instance and `email`.
 
 ### Handlers
 

@@ -8,6 +8,7 @@ package driveevents
 import (
 	"time"
 
+	"github.com/cozy/cozy-stack/model/instance"
 	"github.com/cozy/cozy-stack/model/job"
 	"github.com/cozy/cozy-stack/model/permission"
 	"github.com/cozy/cozy-stack/model/vfs"
@@ -74,13 +75,69 @@ type File struct {
 	Name     string       `json:"name"`
 	Mime     string       `json:"mime,omitempty"`
 	Metadata vfs.Metadata `json:"metadata,omitempty"`
-	// UpdatedByApps are the slugs of the apps that wrote the file, the last
-	// one last: a consumer recognizes its own writes.
+	// UpdatedByApps are the slugs of the apps that wrote the file.
 	UpdatedByApps []string `json:"updated_by_apps,omitempty"`
+	// WrittenBy is the app that made this write, when the file names it:
+	// absent for a client that names no app.
+	WrittenBy string `json:"written_by,omitempty"`
+	// Actor is the owner of the instance, absent on an organization instance.
+	Actor *Actor `json:"actor,omitempty"`
 	// DriveID is the shared drive of this instance holding the file, if any.
 	DriveID string `json:"drive_id,omitempty"`
 	// From is the file it was copied or moved from.
 	From *File `json:"from,omitempty"`
+}
+
+// Actor is the person who owns the instance of a file.
+type Actor struct {
+	Sub   string `json:"sub"`
+	Email string `json:"email,omitempty"`
+}
+
+// writtenByWindow is how close to the write the date of an app entry must be
+// for that app to have made it.
+const writtenByWindow = 2 * time.Second
+
+func actorOf(db prefixer.Prefixer) *Actor {
+	if inst, ok := db.(*instance.Instance); ok {
+		return actorOfInstance(inst)
+	}
+	return actorOfDomain(db.DomainName())
+}
+
+// actorOfDomain is replaced by the tests.
+var actorOfDomain = func(domain string) *Actor {
+	inst, err := instance.Get(domain)
+	if err != nil {
+		return nil
+	}
+	return actorOfInstance(inst)
+}
+
+func actorOfInstance(inst *instance.Instance) *Actor {
+	if inst.OIDCID == "" {
+		return nil
+	}
+	email, _ := inst.SettingsEMail()
+	return &Actor{Sub: inst.OIDCID, Email: email}
+}
+
+// writtenBy returns the app whose entry is dated at the write, or "".
+func writtenBy(doc *vfs.FileDoc, at time.Time) string {
+	if doc.CozyMetadata == nil {
+		return ""
+	}
+	var slug string
+	var latest time.Time
+	for _, entry := range doc.CozyMetadata.UpdatedByApps {
+		if entry.Date.After(latest) {
+			slug, latest = entry.Slug, entry.Date
+		}
+	}
+	if slug == "" || at.Sub(latest).Abs() > writtenByWindow {
+		return ""
+	}
+	return slug
 }
 
 // DriveOf names the shared drive owned by the instance whose root holds the
@@ -96,6 +153,7 @@ type Member struct {
 	Sharer    string   `json:"sharer"`
 	Drive     bool     `json:"drive"`
 	Member    string   `json:"member,omitempty"`
+	Email     string   `json:"email,omitempty"`
 	ReadOnly  bool     `json:"read_only"`
 	Status    string   `json:"status"`
 	FileIDs   []string `json:"file_ids"`
@@ -178,7 +236,11 @@ func fileChanged(db prefixer.Prefixer, olddoc, newdoc *vfs.FileDoc) {
 	case newdoc == nil:
 		if to := olddoc.MovedTo(); to != nil {
 			moved := fileData(db, olddoc, nil)
-			emit(db, FileMoved, &File{ID: to.ID, Instance: to.Instance, DirID: to.DirID, DriveID: to.DriveID, Name: olddoc.DocName, Mime: olddoc.Mime, Metadata: olddoc.Metadata, From: moved})
+			actor := moved.Actor
+			if actor == nil {
+				actor = actorOfDomain(to.Instance)
+			}
+			emit(db, FileMoved, &File{ID: to.ID, Instance: to.Instance, DirID: to.DirID, DriveID: to.DriveID, Name: olddoc.DocName, Mime: olddoc.Mime, Metadata: olddoc.Metadata, Actor: actor, From: moved})
 		} else {
 			emit(db, FileDestroyed, fileData(db, olddoc, nil))
 		}
@@ -187,7 +249,11 @@ func fileChanged(db prefixer.Prefixer, olddoc, newdoc *vfs.FileDoc) {
 	case olddoc.Trashed && !newdoc.Trashed:
 		emit(db, FileRestored, fileData(db, newdoc, nil))
 	case olddoc.DirID != newdoc.DirID:
-		emit(db, FileMoved, fileData(db, newdoc, &vfs.FileRef{ID: olddoc.ID(), Instance: db.DomainName()}))
+		from := &vfs.FileRef{ID: olddoc.ID(), Instance: db.DomainName(), DirID: olddoc.DirID}
+		if DriveOf != nil {
+			from.DriveID = DriveOf(db, olddoc)
+		}
+		emit(db, FileMoved, fileData(db, newdoc, from))
 	case olddoc.DocName != newdoc.DocName || metadataChanged(olddoc.Metadata, newdoc.Metadata):
 		emit(db, FileUpdated, fileData(db, newdoc, nil))
 	}
@@ -213,8 +279,11 @@ func fileData(db prefixer.Prefixer, doc *vfs.FileDoc, from *vfs.FileRef) *File {
 			f.UpdatedByApps = append(f.UpdatedByApps, entry.Slug)
 		}
 	}
+	// The event is emitted during the write: now is its time
+	f.WrittenBy = writtenBy(doc, time.Now())
+	f.Actor = actorOf(db)
 	if from != nil {
-		f.From = &File{ID: from.ID, Instance: from.Instance}
+		f.From = &File{ID: from.ID, Instance: from.Instance, DirID: from.DirID, DriveID: from.DriveID}
 		if f.From.Instance == "" {
 			f.From.Instance = domain
 		}
