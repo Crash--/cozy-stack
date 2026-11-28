@@ -326,6 +326,15 @@ func TestReadAfterTheInstanceIsRecreated(t *testing.T) {
 		_, err := List(inst)
 		require.NoError(t, err)
 	})
+
+	t.Run("DestroyedByAnotherProcessBeforeAnyFile", func(t *testing.T) {
+		inst := setup.GetTestInstance()
+		require.NoError(t, couchdb.DeleteDB(inst, consts.Files))
+		indexedDBs.Store(inst.DBPrefix(), struct{}{})
+		files, err := List(inst)
+		require.NoError(t, err)
+		assert.Empty(t, files)
+	})
 }
 
 func TestDriveQueueUsesThePointerHandler(t *testing.T) {

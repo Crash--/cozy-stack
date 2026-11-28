@@ -322,8 +322,9 @@ func findPointers(inst *instance.Instance, selector mango.Filter, limit int) ([]
 	var files []*vfs.FileDoc
 	req := &couchdb.FindRequest{UseIndex: "by-external-id", Selector: selector, Limit: limit}
 	err := couchdb.FindDocs(inst, consts.Files, req, &files)
-	if couchdb.IsNoIndexError(err) {
-		// Another process destroyed and recreated the instance: its index is gone.
+	if couchdb.IsNoIndexError(err) || couchdb.IsNoDatabaseError(err) {
+		// Another process destroyed and recreated the instance: its index, or
+		// its database of files, is gone. Declaring the index creates both.
 		indexedDBs.Delete(inst.DBPrefix())
 		if err = ensureIndex(inst); err != nil {
 			return nil, err
