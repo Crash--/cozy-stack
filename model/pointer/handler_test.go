@@ -3,13 +3,16 @@ package pointer
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/cozy/cozy-stack/model/sharing"
 	"github.com/cozy/cozy-stack/model/vfs"
 	"github.com/cozy/cozy-stack/pkg/config/config"
 	"github.com/cozy/cozy-stack/pkg/consts"
+	"github.com/cozy/cozy-stack/pkg/couchdb"
 	"github.com/cozy/cozy-stack/pkg/couchdb/mango"
 	"github.com/cozy/cozy-stack/pkg/prefixer"
 	"github.com/cozy/cozy-stack/pkg/rabbitmq"
@@ -236,6 +239,59 @@ func TestHandler(t *testing.T) {
 		err := h.Handle(ctx, amqp.Delivery{RoutingKey: "drive.pointer.ensure", Body: []byte("{}")})
 		assert.ErrorIs(t, err, rabbitmq.ErrMalformed)
 	})
+}
+
+// The Drive of a member creates a document in a shared drive with its own
+// instance and the id the folder has on the owner (C2 from Drive).
+func TestEnsureFromTheDriveOfAMember(t *testing.T) {
+	if testing.Short() {
+		t.Skip("an instance is required for this test: test skipped due to the use of --short flag")
+	}
+	config.UseTestFile(t)
+	testutils.NeedCouchdb(t)
+	owner := testutils.NewSetup(t, t.Name()+"_owner").GetTestInstance()
+	member := testutils.NewSetup(t, t.Name()+"_member").GetTestInstance()
+	root, err := vfs.MkdirAll(owner.VFS(), "/Team")
+	require.NoError(t, err)
+	sub, err := vfs.MkdirAll(owner.VFS(), "/Team/Notes")
+	require.NoError(t, err)
+	members := func(memberWrites bool) []sharing.Member {
+		return []sharing.Member{
+			{Instance: "https://" + owner.Domain, Status: sharing.MemberStatusOwner},
+			{Instance: "https://" + member.Domain, Status: sharing.MemberStatusReady, ReadOnly: !memberWrites},
+		}
+	}
+	rules := []sharing.Rule{{Title: "Team", DocType: consts.Files, Values: []string{root.ID()}}}
+	ownerSide := &sharing.Sharing{SID: "drive-team", Drive: true, Active: true, Owner: true, Members: members(true), Rules: rules}
+	require.NoError(t, couchdb.CreateNamedDocWithDB(owner, ownerSide))
+	require.NoError(t, couchdb.CreateNamedDocWithDB(member, &sharing.Sharing{SID: "drive-team", Drive: true, Active: true, Members: members(true), Rules: rules}))
+
+	b := &Batch{App: "docs-side-service", Mime: "application/vnd.twake.docs", Folder: "Docs"}
+	at := time.Date(2026, 11, 28, 10, 0, 0, 0, time.UTC)
+	for i, dir := range []*vfs.DirDoc{root, sub} {
+		ext := fmt.Sprintf("from-member-%d", i)
+		_, err := Apply(b, &Item{Op: OpEnsure, Instance: member.Domain, ExternalID: ext, Name: ext + ".docs-note", Role: "owner", DirID: dir.ID(), AsOf: at})
+		require.NoError(t, err)
+		onOwner, err := FindByExternalID(owner, ext)
+		require.NoError(t, err)
+		require.NotNil(t, onOwner, "the pointer is in the drive, on its owner")
+		assert.Equal(t, dir.ID(), onOwner.DirID)
+		onMember, err := FindByExternalID(member, ext)
+		require.NoError(t, err)
+		assert.Nil(t, onMember)
+	}
+
+	// A member in read only gets the pointer in their own folder of the app
+	ownerSide.Members = members(false)
+	require.NoError(t, couchdb.UpdateDoc(owner, ownerSide))
+	_, err = Apply(b, &Item{Op: OpEnsure, Instance: member.Domain, ExternalID: "from-reader", Name: "R.docs-note", DirID: root.ID(), AsOf: at})
+	require.NoError(t, err)
+	onMember, err := FindByExternalID(member, "from-reader")
+	require.NoError(t, err)
+	require.NotNil(t, onMember)
+	parent, err := member.VFS().DirByID(onMember.DirID)
+	require.NoError(t, err)
+	assert.Equal(t, "/Docs", parent.Fullpath)
 }
 
 func TestDriveQueueUsesThePointerHandler(t *testing.T) {

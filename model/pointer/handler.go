@@ -136,6 +136,16 @@ func apply(b *Batch, it *Item) (Outcome, error) {
 			if !os.IsNotExist(err) && !couchdb.IsNotFoundError(err) {
 				return "", err
 			}
+			// A folder of a shared drive, as the Drive of a member shows it: the
+			// pointer goes to the drive, on its owner, if the member writes to it
+			if owner := sharing.OwnerOfDriveDir(inst, it.DirID); owner != "" && it.Member == "" {
+				redirected := *it
+				redirected.Instance, redirected.Member, redirected.Role = owner, inst.Domain, ""
+				if redirected.Fallback == nil {
+					redirected.Fallback = &Fallback{Instance: inst.Domain, Folder: b.Folder}
+				}
+				return apply(b, &redirected)
+			}
 			log.WithDomain(inst.Domain).Warnf("ensure %s: folder %s is gone", it.ExternalID, it.DirID)
 			if it.Fallback != nil {
 				return applyFallback(b, it)

@@ -113,6 +113,42 @@ func WritableDriveOfDir(inst *instance.Instance, dirID, member string) string {
 	return ""
 }
 
+// OwnerOfDriveDir returns the domain of the instance owning a shared drive the
+// member belongs to and whose tree holds the directory, or "". A member's Drive
+// shows the folders of a shared drive with the ids they have on its owner.
+func OwnerOfDriveDir(member *instance.Instance, dirID string) string {
+	drives, err := ListDrives(member)
+	if err != nil {
+		return ""
+	}
+	for _, s := range drives {
+		if s.Owner || len(s.Members) == 0 {
+			continue
+		}
+		rootID, err := s.DriveRootID()
+		if err != nil {
+			continue
+		}
+		ownerDomain := hostOf(s.Members[0].Instance)
+		if dirID == rootID {
+			return ownerDomain
+		}
+		owner, err := instance.Get(ownerDomain)
+		if err != nil {
+			continue
+		}
+		fs := vfs.NewCouchdbIndexer(owner)
+		dir, err := fs.DirByID(dirID)
+		if err != nil {
+			continue
+		}
+		if root, err := fs.DirByID(rootID); err == nil && strings.HasPrefix(dir.Fullpath, root.Fullpath+"/") {
+			return ownerDomain
+		}
+	}
+	return ""
+}
+
 func hostOf(instanceURL string) string {
 	host := strings.TrimPrefix(strings.TrimPrefix(instanceURL, "https://"), "http://")
 	return strings.TrimSuffix(host, "/")
