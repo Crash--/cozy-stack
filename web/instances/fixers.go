@@ -206,6 +206,29 @@ func sharingsFixer(c echo.Context) error {
 	return c.JSON(http.StatusOK, fixed)
 }
 
+// driveEventsFixer publishes again the sharing.member events of the shared
+// drives owned by the instance, for a consumer that missed them.
+func driveEventsFixer(c echo.Context) error {
+	domain := c.Param("domain")
+	inst, err := lifecycle.GetInstance(domain)
+	if err != nil {
+		return err
+	}
+	drives, err := sharing.ListDrives(inst)
+	if err != nil {
+		return err
+	}
+	emitted := []string{}
+	for _, s := range drives {
+		if !s.Owner {
+			continue
+		}
+		s.EmitMembers(inst)
+		emitted = append(emitted, s.SID)
+	}
+	return c.JSON(http.StatusOK, echo.Map{"drives": emitted})
+}
+
 type serviceMessage struct {
 	Slug string `json:"slug"`
 	Name string `json:"name"`

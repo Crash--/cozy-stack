@@ -985,7 +985,11 @@ func (s *Sharing) RevokeRecipientByNotification(inst *instance.Instance, m *Memb
 	m.Status = MemberStatusRevoked
 	*c = Credentials{}
 
-	return s.NoMoreRecipient(inst)
+	if err := s.NoMoreRecipient(inst); err != nil {
+		return err
+	}
+	s.emitMember(inst, memberRemoved, m)
+	return nil
 }
 
 // NoMoreRecipient keeps empty org drives active and cleans up other sharings.

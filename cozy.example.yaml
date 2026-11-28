@@ -877,6 +877,21 @@ rabbitmq:
           delivery_limit: 5
           bindings:
             - drive.org_drive.ensure
+        # The commands of a side service on the pointers of the instances, the
+        # files that stand for a document of another app (metadata.externalId),
+        # by batches of at most 200.
+        - name: stack.drive.pointers
+          declare: true
+          declare_dlx: true
+          declare_dlq: true
+          dlx_name: stack.drive.dlx
+          dlq_name: stack.dead.letter.drive.pointers
+          dl_routing_key: drive.pointers.dead
+          prefetch: 8
+          delivery_limit: 5
+          bindings:
+            - drive.pointer.batch
+            - drive.sharing.describe
     - name: rag.index.topic
       kind: topic
       durable: true

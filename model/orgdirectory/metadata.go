@@ -38,6 +38,12 @@ func IsManagedDirectoryDoc(doc *couchdb.JSONDoc) bool {
 	return meta.Managed
 }
 
+// DirectoryOf returns the organization directory metadata of a contact or
+// group document, empty when the document is not managed.
+func DirectoryOf(doc *couchdb.JSONDoc) DirectoryMetadata {
+	return directoryMetadata(doc)
+}
+
 func directoryMetadata(doc *couchdb.JSONDoc) DirectoryMetadata {
 	if doc == nil || doc.M == nil {
 		return DirectoryMetadata{}

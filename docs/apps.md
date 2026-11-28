@@ -47,6 +47,7 @@ filename for this file: `manifest.webapp`.
 | services                        | a map of the services associated with the app (see below for more details)                                                            |
 | routes                          | a map of routes for the app (see below for more details)                                                                              |
 | entrypoints                     | a map of entrypoints for the app (see below for more details)                                                                   |
+| pointers                        | the pointer files whose documents the app owns, and the paths that open and create them (see below for more details)                |
 | mobile                          | information about app's mobile version (see below for more details)                                                                   |
 | accept_from_flagship            | boolean stating if the app is compatible with the Flagship app's "OS Receive" feature                                                 |
 | accept_documents_from_flagship  | when `accept_from_flagship` is `true`, defines what can be uploaded to the app (see [here](accept-from-flagship.md) for more details) |
@@ -189,6 +190,41 @@ Entrypoints indicates front end routes to other apps. It contains a `name`, a `t
       "conditions": [{ "type": "flag", "name": "office.enabled", "value": true }] // optional, conditions to display or not the entrypoint
     }
   ]
+```
+
+### Pointers
+
+A pointer is a file of the VFS that stands for a document stored by an app:
+its `metadata.externalId` is the id of the document in the app. The app lists
+the kinds of pointer it owns in `pointers`, so that a drive application opens,
+creates and shares their documents without knowing the app:
+
+- `mime`: the mime type of the pointer files;
+- `open` (optional): the path that opens a document, where `{externalId}` is
+  replaced by the id of the document;
+- `create` (optional): the path that creates a document whose pointer goes in a
+  folder, where `{instance}` is replaced by the domain of the instance and
+  `{dirId}` by the id of the folder.
+
+The paths are relative to the client URL of the app, the value of the flag
+named by `client_url_flag`. Each value is URL-encoded. The stack keeps the
+field as it is in the manifest and returns it with the other attributes of the
+app. Sharing a document goes through the `SHARE` intent on the same mime type.
+
+```json
+{
+  "client_url_flag": "notes.client-url",
+  "intents": [
+    { "action": "SHARE", "type": ["application/vnd.example.note"], "href": "/share/" }
+  ],
+  "pointers": [
+    {
+      "mime": "application/vnd.example.note",
+      "open": "/notes/{externalId}/",
+      "create": "/notes/new/?instance={instance}&dir_id={dirId}"
+    }
+  ]
+}
 ```
 
 ### Notifications

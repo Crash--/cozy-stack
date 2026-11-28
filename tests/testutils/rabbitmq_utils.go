@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -59,8 +60,14 @@ func StartRabbitMQ(t *testing.T, withVolume bool, enableTLS bool) *RabbitFixture
 		}
 	}
 
+	// COZY_TEST_RABBITMQ_IMAGE runs the broker tests against another version:
+	// since 4.3 a quorum queue no longer counts a nack towards its delivery limit
+	image := os.Getenv("COZY_TEST_RABBITMQ_IMAGE")
+	if image == "" {
+		image = "rabbitmq:3.13-management"
+	}
 	req := tc.ContainerRequest{
-		Image:        "rabbitmq:3.13-management",
+		Image:        image,
 		ExposedPorts: []string{"5672/tcp", "15672/tcp", "5671/tcp"},
 		Env: map[string]string{
 			"RABBITMQ_DEFAULT_USER": user,

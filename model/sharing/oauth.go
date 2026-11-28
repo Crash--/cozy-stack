@@ -663,6 +663,7 @@ func (s *Sharing) ProcessAnswer(inst *instance.Instance, creds *APICredentials) 
 			}); err != nil {
 				return nil, err
 			}
+			s.emitMember(inst, memberAdded, &s.Members[i+1])
 			if creds.Bitwarden != nil {
 				if err := s.SaveBitwarden(inst, &s.Members[i+1], creds.Bitwarden); err != nil {
 					return nil, err

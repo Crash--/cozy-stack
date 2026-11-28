@@ -49,6 +49,11 @@ func AskDeletion(inst *instance.Instance) error {
 	return res.Body.Close()
 }
 
+// OnDestroyed are called once the databases of an instance are deleted, so
+// that what a package cached for them in this process can be forgotten: a new
+// instance on the same domain gets the same prefix.
+var OnDestroyed []func(inst *instance.Instance)
+
 // Destroy is used to remove the instance. All the data linked to this
 // instance will be permanently deleted.
 func Destroy(domain string) error {
@@ -111,6 +116,9 @@ func Destroy(domain string) error {
 	if err = couchdb.DeleteAllDBs(inst); err != nil {
 		inst.Logger().Errorf("Could not delete all CouchDB databases: %s", err.Error())
 		return retryable(err)
+	}
+	for _, forget := range OnDestroyed {
+		forget(inst)
 	}
 
 	err = instance.Delete(inst)
