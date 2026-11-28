@@ -94,8 +94,30 @@ func (h *Handler) Handle(_ context.Context, d amqp.Delivery) error {
 	return nil
 }
 
-// Apply applies one item, under a lock on its document on its instance.
+// permanentVFSErrors are the answers of the VFS that a redelivery cannot change.
+var permanentVFSErrors = []error{
+	vfs.ErrParentDoesNotExist, vfs.ErrParentInTrash, vfs.ErrForbiddenDocMove,
+	vfs.ErrIllegalFilename, vfs.ErrIllegalPath, vfs.ErrFileInTrash,
+}
+
+// Apply applies one item, under a lock on its document on its instance. An
+// error it returns is definitive when a redelivery cannot fix it.
 func Apply(b *Batch, it *Item) (Outcome, error) {
+	outcome, err := apply(b, it)
+	return outcome, permanentOrNot(err)
+}
+
+// permanentOrNot marks as definitive an error of the VFS a redelivery cannot change.
+func permanentOrNot(err error) error {
+	for _, permanent := range permanentVFSErrors {
+		if errors.Is(err, permanent) && !errors.Is(err, errDefinitive) {
+			return fmt.Errorf("%w: %w", errDefinitive, err)
+		}
+	}
+	return err
+}
+
+func apply(b *Batch, it *Item) (Outcome, error) {
 	if err := it.check(b); err != nil {
 		return "", fmt.Errorf("%w: %s", errDefinitive, err)
 	}
@@ -106,16 +128,26 @@ func Apply(b *Batch, it *Item) (Outcome, error) {
 		}
 		return "", err
 	}
+	if it.Op == OpEnsure && it.DirID != "" {
+		// The folder may be gone (deleted meanwhile, or lost): the pointer goes
+		// to its fallback, or stays out of it
+		if _, err := inst.VFS().DirByID(it.DirID); err != nil {
+			if !os.IsNotExist(err) && !couchdb.IsNotFoundError(err) {
+				return "", err
+			}
+			log.WithDomain(inst.Domain).Warnf("ensure %s: folder %s is gone", it.ExternalID, it.DirID)
+			if it.Fallback != nil {
+				return applyFallback(b, it)
+			}
+			it.DirID, it.Member = "", ""
+		}
+	}
 	if it.Op == OpEnsure && it.Member != "" && it.DirID != "" {
 		if sharing.WritableDriveOfDir(inst, it.DirID, it.Member) == "" {
 			if it.Fallback == nil {
 				return "", fmt.Errorf("%w: %s writes in no drive of %s holding %s", errDefinitive, it.Member, it.Instance, it.DirID)
 			}
-			fb := *it
-			fb.Instance, fb.DirID, fb.Member, fb.Fallback = it.Fallback.Instance, "", "", nil
-			fbBatch := *b
-			fbBatch.Folder = it.Fallback.Folder
-			return Apply(&fbBatch, &fb)
+			return applyFallback(b, it)
 		}
 	}
 	mu := config.Lock().ReadWrite(inst, "pointers/"+it.ExternalID)
@@ -159,6 +191,15 @@ func Apply(b *Batch, it *Item) (Outcome, error) {
 		return Done, err
 	}
 	return "", fmt.Errorf("%w: unknown op %q", errDefinitive, it.Op)
+}
+
+// applyFallback applies an ensure to its fallback instance and folder.
+func applyFallback(b *Batch, it *Item) (Outcome, error) {
+	fb := *it
+	fb.Instance, fb.DirID, fb.Member, fb.Fallback = it.Fallback.Instance, "", "", nil
+	fbBatch := *b
+	fbBatch.Folder = it.Fallback.Folder
+	return apply(&fbBatch, &fb)
 }
 
 // olderThanApplied tells if asOf is older than the last command applied to

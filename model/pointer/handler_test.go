@@ -182,6 +182,36 @@ func TestHandler(t *testing.T) {
 		assert.Equal(t, "G.docs-note", pointerOf("doc-4").DocName)
 	})
 
+	t.Run("AFolderGoneIsNotRetriedForever", func(t *testing.T) {
+		gone, err := vfs.MkdirAll(inst.VFS(), "/Gone")
+		require.NoError(t, err)
+		require.NoError(t, inst.VFS().DestroyDirAndContent(gone, func(vfs.TrashJournal) error { return nil }))
+		// A new pointer for a folder that no longer exists lands in the folder of the app
+		require.NoError(t, h.Handle(ctx, batch(map[string]any{"op": "ensure", "externalId": "doc-7", "name": "H.docs-note", "dirId": gone.ID()})))
+		file := pointerOf("doc-7")
+		require.NotNil(t, file)
+		parent, err := inst.VFS().DirByID(file.DirID)
+		require.NoError(t, err)
+		assert.Equal(t, "/Docs", parent.Fullpath)
+		// An existing one stays where it is, and takes its new name
+		require.NoError(t, h.Handle(ctx, batch(map[string]any{"op": "ensure", "externalId": "doc-7", "name": "I.docs-note", "dirId": gone.ID(), "asOf": t0.Add(time.Second)})))
+		assert.Equal(t, "I.docs-note", pointerOf("doc-7").DocName)
+		assert.Equal(t, parent.ID(), pointerOf("doc-7").DirID)
+		// With a fallback, the fallback
+		require.NoError(t, h.Handle(ctx, batch(map[string]any{
+			"op": "ensure", "externalId": "doc-8", "name": "J.docs-note", "dirId": gone.ID(), "member": "frank.cozy.local",
+			"fallback": map[string]any{"instance": inst.Domain, "folder": "Fallback"},
+		})))
+		fb, err := inst.VFS().DirByID(pointerOf("doc-8").DirID)
+		require.NoError(t, err)
+		assert.Equal(t, "/Fallback", fb.Fullpath)
+	})
+
+	t.Run("APermanentErrorOfTheVFSIsDefinitive", func(t *testing.T) {
+		assert.ErrorIs(t, permanentOrNot(vfs.ErrParentDoesNotExist), errDefinitive)
+		assert.NotErrorIs(t, permanentOrNot(os.ErrDeadlineExceeded), errDefinitive)
+	})
+
 	t.Run("WrongRoutingKeyIsMalformed", func(t *testing.T) {
 		err := h.Handle(ctx, amqp.Delivery{RoutingKey: "drive.pointer.ensure", Body: []byte("{}")})
 		assert.ErrorIs(t, err, rabbitmq.ErrMalformed)
