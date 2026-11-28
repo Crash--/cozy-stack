@@ -28,15 +28,25 @@ func init() {
 // It reads the index directly: the VFS calls FileChanged while it holds its
 // lock, and its own DirByID would wait for that lock forever.
 func DriveOf(inst *instance.Instance, doc *vfs.FileDoc) string {
+	roots, err := DriveRootsOf(inst)
+	if err != nil {
+		return ""
+	}
+	return roots.Of(inst, doc)
+}
+
+// DriveRoots are the root directories of the shared drives an instance owns,
+// by sharing id: read once, they name the drive of many files.
+type DriveRoots map[string]string
+
+// DriveRootsOf reads the roots of the shared drives the instance owns.
+func DriveRootsOf(inst *instance.Instance) (DriveRoots, error) {
 	drives, err := ListDrives(inst)
 	if err != nil {
-		return ""
+		return nil, err
 	}
 	fs := vfs.NewCouchdbIndexer(inst)
-	fpath, err := doc.Path(fs)
-	if err != nil {
-		return ""
-	}
+	roots := DriveRoots{}
 	for _, s := range drives {
 		if !s.Owner || !s.HasDirectoryDriveRoot() {
 			continue
@@ -45,12 +55,25 @@ func DriveOf(inst *instance.Instance, doc *vfs.FileDoc) string {
 		if err != nil {
 			continue
 		}
-		root, err := fs.DirByID(rootID)
-		if err != nil {
-			continue
+		if root, err := fs.DirByID(rootID); err == nil {
+			roots[s.SID] = root.Fullpath
 		}
-		if strings.HasPrefix(fpath, root.Fullpath+"/") {
-			return s.SID
+	}
+	return roots, nil
+}
+
+// Of returns the drive whose root holds the file, or "".
+func (roots DriveRoots) Of(inst *instance.Instance, doc *vfs.FileDoc) string {
+	if len(roots) == 0 {
+		return ""
+	}
+	fpath, err := doc.Path(vfs.NewCouchdbIndexer(inst))
+	if err != nil {
+		return ""
+	}
+	for sid, root := range roots {
+		if strings.HasPrefix(fpath, root+"/") {
+			return sid
 		}
 	}
 	return ""

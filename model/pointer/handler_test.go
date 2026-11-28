@@ -10,6 +10,8 @@ import (
 	"github.com/cozy/cozy-stack/model/vfs"
 	"github.com/cozy/cozy-stack/pkg/config/config"
 	"github.com/cozy/cozy-stack/pkg/consts"
+	"github.com/cozy/cozy-stack/pkg/couchdb/mango"
+	"github.com/cozy/cozy-stack/pkg/prefixer"
 	"github.com/cozy/cozy-stack/pkg/rabbitmq"
 	"github.com/cozy/cozy-stack/tests/testutils"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -210,6 +212,24 @@ func TestHandler(t *testing.T) {
 	t.Run("APermanentErrorOfTheVFSIsDefinitive", func(t *testing.T) {
 		assert.ErrorIs(t, permanentOrNot(vfs.ErrParentDoesNotExist), errDefinitive)
 		assert.NotErrorIs(t, permanentOrNot(os.ErrDeadlineExceeded), errDefinitive)
+	})
+
+	t.Run("TheIndexIsDeclaredOncePerInstance", func(t *testing.T) {
+		declared := 0
+		realDefine := defineIndex
+		defineIndex = func(db prefixer.Prefixer, index *mango.Index) error {
+			declared++
+			return realDefine(db, index)
+		}
+		t.Cleanup(func() { defineIndex = realDefine })
+		indexedDBs.Delete(inst.DBPrefix())
+		for range 3 {
+			_, err := List(inst)
+			require.NoError(t, err)
+			_, err = FindByExternalID(inst, "doc-1")
+			require.NoError(t, err)
+		}
+		assert.Equal(t, 1, declared)
 	})
 
 	t.Run("WrongRoutingKeyIsMalformed", func(t *testing.T) {

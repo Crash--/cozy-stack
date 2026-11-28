@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"sync"
 	"time"
 
 	"github.com/cozy/cozy-stack/model/instance"
@@ -283,8 +284,26 @@ func List(inst *instance.Instance) ([]*vfs.FileDoc, error) {
 	return findPointers(inst, mango.Exists("metadata.externalId"), 10000)
 }
 
+// indexedDBs are the instances whose index by externalId this process has
+// declared: declaring it on every lookup saturates CouchDB under load.
+var indexedDBs sync.Map
+
+// defineIndex is replaced by the tests.
+var defineIndex = couchdb.DefineIndex
+
+func ensureIndex(inst *instance.Instance) error {
+	if _, ok := indexedDBs.Load(inst.DBPrefix()); ok {
+		return nil
+	}
+	if err := defineIndex(inst, externalIDIndex); err != nil {
+		return err
+	}
+	indexedDBs.Store(inst.DBPrefix(), struct{}{})
+	return nil
+}
+
 func findPointers(inst *instance.Instance, selector mango.Filter, limit int) ([]*vfs.FileDoc, error) {
-	if err := couchdb.DefineIndex(inst, externalIDIndex); err != nil {
+	if err := ensureIndex(inst); err != nil {
 		return nil, err
 	}
 	var files []*vfs.FileDoc

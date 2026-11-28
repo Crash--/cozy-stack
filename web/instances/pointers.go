@@ -54,6 +54,10 @@ func queryPointers(c echo.Context) error {
 		if err != nil {
 			return err
 		}
+		roots, err := sharing.DriveRootsOf(inst)
+		if err != nil {
+			return err
+		}
 		infos := make([]pointerInfo, 0, len(files))
 		for _, f := range files {
 			info := pointerInfo{FileID: f.ID(), Name: f.DocName, Mime: f.Mime, DirID: f.DirID, Trashed: f.Trashed}
@@ -61,7 +65,7 @@ func queryPointers(c echo.Context) error {
 			info.Role, _ = f.Metadata[pointer.ExternalRoleKey].(string)
 			info.AsOf, _ = f.Metadata[pointer.ExternalAsOfKey].(string)
 			if !f.Trashed {
-				info.DriveID = sharing.DriveOf(inst, f)
+				info.DriveID = roots.Of(inst, f)
 			}
 			infos = append(infos, info)
 		}
