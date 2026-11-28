@@ -42,9 +42,10 @@ const (
 	FileRestored  = "com.twake.drive.file.restored.v1"
 	FileDestroyed = "com.twake.drive.file.destroyed.v1"
 
-	MemberAdded   = "com.twake.drive.sharing.member.added.v1"
-	MemberUpdated = "com.twake.drive.sharing.member.updated.v1"
-	MemberRemoved = "com.twake.drive.sharing.member.removed.v1"
+	MemberAdded     = "com.twake.drive.sharing.member.added.v1"
+	MemberUpdated   = "com.twake.drive.sharing.member.updated.v1"
+	MemberRemoved   = "com.twake.drive.sharing.member.removed.v1"
+	DriveStateEvent = "com.twake.drive.sharing.drive.state.v1"
 
 	LinkCreated = "com.twake.drive.sharing.link.created.v1"
 	LinkUpdated = "com.twake.drive.sharing.link.updated.v1"
@@ -82,10 +83,35 @@ type File struct {
 	WrittenBy string `json:"written_by,omitempty"`
 	// Actor is the owner of the instance, absent on an organization instance.
 	Actor *Actor `json:"actor,omitempty"`
-	// DriveID is the shared drive of this instance holding the file, if any.
-	DriveID string `json:"drive_id,omitempty"`
+	// DriveID is the shared drive of this instance holding the file, if any,
+	// and DriveName its name.
+	DriveID   string `json:"drive_id,omitempty"`
+	DriveName string `json:"drive_name,omitempty"`
+	Trashed   bool   `json:"trashed"`
+	// UpdatedAt is the time of the write the event tells: the date of a
+	// gesture, which the consumers compare to keep the latest one.
+	UpdatedAt time.Time `json:"updated_at"`
 	// From is the file it was copied or moved from.
 	From *File `json:"from,omitempty"`
+}
+
+// DriveState is the data of a sharing.drive.state event: a shared drive and
+// its members, as its owner holds them at At.
+type DriveState struct {
+	SharingID string        `json:"sharing_id"`
+	Instance  string        `json:"instance"`
+	Name      string        `json:"name,omitempty"`
+	FileIDs   []string      `json:"file_ids"`
+	Members   []DriveMember `json:"members"`
+	At        time.Time     `json:"at"`
+}
+
+// DriveMember is a recipient of a shared drive, in a sharing.drive.state event.
+type DriveMember struct {
+	Member   string `json:"member"`
+	Email    string `json:"email,omitempty"`
+	ReadOnly bool   `json:"read_only"`
+	Status   string `json:"status"`
 }
 
 // Actor is the person who owns the instance of a file.
@@ -145,6 +171,17 @@ func writtenBy(doc *vfs.FileDoc, at time.Time) string {
 // file, or "" outside any drive. Set by the sharing package, which this one
 // cannot import.
 var DriveOf func(db prefixer.Prefixer, doc *vfs.FileDoc) string
+
+// DriveName gives the name of a shared drive owned by the instance of the
+// domain, or "". Set by the sharing package.
+var DriveName func(domain, sharingID string) string
+
+func driveName(domain, sharingID string) string {
+	if DriveName == nil || sharingID == "" {
+		return ""
+	}
+	return DriveName(domain, sharingID)
+}
 
 // Member is the data of the sharing.member events.
 type Member struct {
@@ -241,7 +278,7 @@ func fileChanged(db prefixer.Prefixer, olddoc, newdoc *vfs.FileDoc) {
 			if actor == nil {
 				actor = actorOfDomain(to.Instance)
 			}
-			emit(db, FileMoved, &File{ID: to.ID, Instance: to.Instance, DirID: to.DirID, DriveID: to.DriveID, Name: olddoc.DocName, Mime: olddoc.Mime, Metadata: olddoc.Metadata, Actor: actor, From: moved})
+			emit(db, FileMoved, &File{ID: to.ID, Instance: to.Instance, DirID: to.DirID, DriveID: to.DriveID, DriveName: driveName(to.Instance, to.DriveID), UpdatedAt: moved.UpdatedAt, Name: olddoc.DocName, Mime: olddoc.Mime, Metadata: olddoc.Metadata, Actor: actor, From: moved})
 		} else {
 			emit(db, FileDestroyed, fileData(db, olddoc, nil))
 		}
@@ -271,20 +308,22 @@ func metadataChanged(old, updated vfs.Metadata) bool {
 
 func fileData(db prefixer.Prefixer, doc *vfs.FileDoc, from *vfs.FileRef) *File {
 	domain := db.DomainName()
-	f := &File{ID: doc.ID(), Instance: domain, DirID: doc.DirID, Name: doc.DocName, Mime: doc.Mime, Metadata: doc.Metadata}
+	// The event is emitted during the write: now is its time
+	now := time.Now().UTC()
+	f := &File{ID: doc.ID(), Instance: domain, DirID: doc.DirID, Name: doc.DocName, Mime: doc.Mime, Metadata: doc.Metadata, Trashed: doc.Trashed, UpdatedAt: now}
 	if DriveOf != nil && !doc.Trashed {
 		f.DriveID = DriveOf(db, doc)
+		f.DriveName = driveName(domain, f.DriveID)
 	}
 	if doc.CozyMetadata != nil {
 		for _, entry := range doc.CozyMetadata.UpdatedByApps {
 			f.UpdatedByApps = append(f.UpdatedByApps, entry.Slug)
 		}
 	}
-	// The event is emitted during the write: now is its time
-	f.WrittenBy = writtenBy(doc, time.Now())
+	f.WrittenBy = writtenBy(doc, now)
 	f.Actor = actorOf(db)
 	if from != nil {
-		f.From = &File{ID: from.ID, Instance: from.Instance, DirID: from.DirID, DriveID: from.DriveID}
+		f.From = &File{ID: from.ID, Instance: from.Instance, DirID: from.DirID, DriveID: from.DriveID, UpdatedAt: now}
 		if f.From.Instance == "" {
 			f.From.Instance = domain
 		}

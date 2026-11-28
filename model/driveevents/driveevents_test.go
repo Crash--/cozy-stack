@@ -36,7 +36,22 @@ func TestFileChanged(t *testing.T) {
 		}
 		return nil
 	}
-	t.Cleanup(func() { emit = Emit; DriveOf = nil; actorOfDomain = realActorOfDomain })
+	DriveName = func(domain, sharingID string) string {
+		return map[string]string{"alice.example/drive-1": "Team", "bob.example/drive-9": "Nine"}[domain+"/"+sharingID]
+	}
+	t.Cleanup(func() { emit = Emit; DriveOf = nil; DriveName = nil; actorOfDomain = realActorOfDomain })
+	// The time of each write is checked once, then left out of the comparisons
+	timed := func() {
+		t.Helper()
+		for _, e := range got {
+			require.False(t, e.file.UpdatedAt.IsZero(), e.eventType)
+			e.file.UpdatedAt = time.Time{}
+			if e.file.From != nil {
+				require.False(t, e.file.From.UpdatedAt.IsZero(), e.eventType)
+				e.file.From.UpdatedAt = time.Time{}
+			}
+		}
+	}
 	db := prefixer.NewPrefixer(0, "alice.example", "alice")
 
 	meta := vfs.Metadata{ExternalIDKey: "doc-1"}
@@ -71,6 +86,11 @@ func TestFileChanged(t *testing.T) {
 		types[i] = e.eventType
 	}
 	assert.Equal(t, []string{FileTrashed, FileRestored, FileMoved, FileUpdated, FileCopied, FileCreated, FileDestroyed, FileMoved}, types)
+	timed()
+	assert.True(t, got[0].file.Trashed)
+	assert.False(t, got[1].file.Trashed)
+	assert.Equal(t, "Team", got[2].file.DriveName)
+	assert.Equal(t, "Nine", got[7].file.DriveName)
 	// A move names the folder it left, and the owner of the instance
 	assert.Equal(t, &File{ID: "f1", Instance: "alice.example", DirID: "d1"}, got[2].file.From)
 	assert.Equal(t, alice, got[2].file.Actor)
@@ -91,6 +111,7 @@ func TestFileChanged(t *testing.T) {
 	got = nil
 	fileChanged(db, moved, file)
 	require.Len(t, got, 1)
+	timed()
 	assert.Equal(t, &File{ID: "f1", Instance: "alice.example", DirID: "d2", DriveID: "drive-1"}, got[0].file.From)
 }
 

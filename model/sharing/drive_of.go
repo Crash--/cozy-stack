@@ -20,6 +20,17 @@ func init() {
 		}
 		return DriveOf(inst, doc)
 	}
+	driveevents.DriveName = func(domain, sharingID string) string {
+		inst, err := instance.Get(domain)
+		if err != nil {
+			return ""
+		}
+		s, err := FindSharing(inst, sharingID)
+		if err != nil {
+			return ""
+		}
+		return s.Description
+	}
 }
 
 // DriveOf returns the id of the shared drive owned by the instance whose root
