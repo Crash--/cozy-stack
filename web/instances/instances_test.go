@@ -3,17 +3,14 @@ package instances
 import (
 	"net/url"
 	"testing"
-	"time"
 
 	"github.com/cozy/cozy-stack/model/instance/lifecycle"
-	"github.com/cozy/cozy-stack/model/pointer"
 	"github.com/cozy/cozy-stack/pkg/config/config"
 	"github.com/cozy/cozy-stack/tests/testutils"
 	"github.com/cozy/cozy-stack/web/errors"
 	"github.com/cozy/cozy-stack/web/middlewares"
 	"github.com/gavv/httpexpect/v2"
 	"github.com/labstack/echo/v4"
-	"github.com/stretchr/testify/require"
 )
 
 func TestInstances(t *testing.T) {
@@ -146,40 +143,5 @@ func TestInstances(t *testing.T) {
 			WithQuery("dry_run", "true").
 			WithHeader("Authorization", "Bearer "+token).
 			Expect().Status(500)
-	})
-
-	t.Run("PointersQuery", func(t *testing.T) {
-		domain := "pointers.cozy.localhost"
-		t.Cleanup(func() { _ = lifecycle.Destroy(domain) })
-		e := testutils.CreateTestClient(t, ts.URL)
-		e.POST("/instances").
-			WithQuery("Domain", domain).
-			WithQuery("Locale", "en").
-			WithQuery("SwiftLayout", "-1").
-			WithHeader("Authorization", "Bearer "+token).
-			Expect().Status(201)
-		asOf := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
-		b := &pointer.Batch{App: "docs-side-service", Mime: "application/vnd.twake.docs", Folder: "Docs"}
-		_, err := pointer.Apply(b, &pointer.Item{Op: pointer.OpEnsure, Instance: domain, ExternalID: "doc-1", Name: "A.docs-note", Role: "owner", AsOf: asOf})
-		require.NoError(t, err)
-
-		res := e.POST("/instances/pointers/query").
-			WithHeader("Authorization", "Bearer "+token).
-			WithJSON(map[string]any{"instances": []string{domain, "nobody.cozy.localhost"}}).
-			Expect().Status(200).
-			JSON().Object().Value("instances").Object()
-		ptr := res.Value(domain).Array().Value(0).Object()
-		ptr.Value("externalId").IsEqual("doc-1")
-		ptr.Value("name").IsEqual("A.docs-note")
-		ptr.Value("mime").IsEqual("application/vnd.twake.docs")
-		ptr.Value("role").IsEqual("owner")
-		ptr.Value("trashed").IsEqual(false)
-		ptr.Value("asOf").IsEqual("2026-11-27T10:00:00Z")
-		res.Value("nobody.cozy.localhost").Object().Value("error").IsEqual("not found")
-
-		e.POST("/instances/pointers/query").
-			WithHeader("Authorization", "Bearer "+token).
-			WithJSON(map[string]any{"instances": []string{}}).
-			Expect().Status(422)
 	})
 }

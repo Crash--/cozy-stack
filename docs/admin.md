@@ -474,62 +474,6 @@ POST /instances/acme.cozy.localhost/fixers/drive-events HTTP/1.1
 }
 ```
 
-### POST /instances/pointers/query
-
-The pointers of several instances (at most 200): the files whose
-`metadata.externalId` names a document of another app. A side service
-compares them with the documents of its product.
-
-#### Request
-
-```http
-POST /instances/pointers/query HTTP/1.1
-Content-Type: application/json
-```
-
-```json
-{ "instances": ["bob.cozy.localhost", "nobody.cozy.localhost"] }
-```
-
-#### Response
-
-```json
-{
-  "instances": {
-    "bob.cozy.localhost": [
-      {
-        "fileId": "d670f8921a7e2cd783d17995b10c7f83",
-        "externalId": "0b85f827-af0f-4696-991d-45566e4cedba",
-        "name": "Plan.docs-note",
-        "mime": "application/vnd.twake.docs",
-        "role": "reader",
-        "dirId": "b5a1ce11d1228297502f8e764133478a",
-        "trashed": false,
-        "asOf": "2026-11-27T10:00:00Z"
-      }
-    ],
-    "nobody.cozy.localhost": { "error": "not found" }
-  }
-}
-```
-
-### GET /instances/:domain/sharings/:sharing-id/drive
-
-A shared drive owned by the instance, with its members (the owner left out).
-
-#### Response
-
-```json
-{
-  "id": "b6108553462e0839383f0ee5400371e0",
-  "name": "Team",
-  "rootIds": ["b6108553462e0839383f0ee540036538"],
-  "members": [
-    { "instance": "frank.cozy.localhost", "email": "frank@example.net", "readOnly": false, "status": "ready" }
-  ]
-}
-```
-
 ### POST /instances/fixers/emails
 
 Set the email of every instance from its settings email. Organization
