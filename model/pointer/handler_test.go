@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cozy/cozy-stack/model/instance/lifecycle"
 	"github.com/cozy/cozy-stack/model/sharing"
 	"github.com/cozy/cozy-stack/model/vfs"
 	"github.com/cozy/cozy-stack/pkg/config/config"
@@ -292,6 +293,39 @@ func TestEnsureFromTheDriveOfAMember(t *testing.T) {
 	parent, err := member.VFS().DirByID(onMember.DirID)
 	require.NoError(t, err)
 	assert.Equal(t, "/Docs", parent.Fullpath)
+}
+
+// An instance destroyed and recreated on the same domain has the same prefix,
+// and no index by externalId.
+func TestReadAfterTheInstanceIsRecreated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("an instance is required for this test: test skipped due to the use of --short flag")
+	}
+	config.UseTestFile(t)
+	testutils.NeedCouchdb(t)
+	setup := testutils.NewSetup(t, t.Name())
+
+	t.Run("DestroyedInThisProcess", func(t *testing.T) {
+		inst := setup.GetTestInstance()
+		_, err := List(inst)
+		require.NoError(t, err)
+		require.NoError(t, lifecycle.Destroy(inst.Domain))
+		_, cached := indexedDBs.Load(inst.DBPrefix())
+		assert.False(t, cached)
+		again := setup.GetTestInstance()
+		require.Equal(t, inst.DBPrefix(), again.DBPrefix())
+		_, err = List(again)
+		require.NoError(t, err)
+		_, err = FindByExternalID(again, "doc-1")
+		require.NoError(t, err)
+	})
+
+	t.Run("DestroyedByAnotherProcess", func(t *testing.T) {
+		inst := setup.GetTestInstance()
+		indexedDBs.Store(inst.DBPrefix(), struct{}{})
+		_, err := List(inst)
+		require.NoError(t, err)
+	})
 }
 
 func TestDriveQueueUsesThePointerHandler(t *testing.T) {

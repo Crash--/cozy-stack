@@ -28,6 +28,9 @@ func init() {
 	rabbitmq.RegisterHandler(Queue, func(p messaging.Publisher) rabbitmq.Handler {
 		return NewHandler(p)
 	})
+	lifecycle.OnDestroyed = append(lifecycle.OnDestroyed, func(inst *instance.Instance) {
+		indexedDBs.Delete(inst.DBPrefix())
+	})
 }
 
 var log = logger.WithNamespace("pointer")
@@ -318,7 +321,17 @@ func findPointers(inst *instance.Instance, selector mango.Filter, limit int) ([]
 	}
 	var files []*vfs.FileDoc
 	req := &couchdb.FindRequest{UseIndex: "by-external-id", Selector: selector, Limit: limit}
-	if err := couchdb.FindDocs(inst, consts.Files, req, &files); err != nil {
+	err := couchdb.FindDocs(inst, consts.Files, req, &files)
+	if couchdb.IsNoIndexError(err) {
+		// Another process destroyed and recreated the instance: its index is gone.
+		indexedDBs.Delete(inst.DBPrefix())
+		if err = ensureIndex(inst); err != nil {
+			return nil, err
+		}
+		files = nil
+		err = couchdb.FindDocs(inst, consts.Files, req, &files)
+	}
+	if err != nil {
 		return nil, err
 	}
 	return files, nil

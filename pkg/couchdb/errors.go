@@ -185,6 +185,18 @@ func IsNoUsableIndexError(err error) bool {
 	return couchErr.Name == "no_usable_index"
 }
 
+// IsNoIndexError checks if an error from the error tree is the "no_index"
+// error of FindDocs: the index the request uses does not exist.
+func IsNoIndexError(err error) bool {
+	var couchErr *Error
+
+	if ok := errors.As(err, &couchErr); !ok {
+		return false
+	}
+
+	return couchErr.Name == "no_index"
+}
+
 func isIndexError(err error) bool {
 	var couchErr *Error
 
