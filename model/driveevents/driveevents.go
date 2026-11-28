@@ -115,7 +115,8 @@ var actorOfDomain = func(domain string) *Actor {
 }
 
 func actorOfInstance(inst *instance.Instance) *Actor {
-	if inst.OIDCID == "" {
+	// An organization instance may carry an oidc_id, but nobody owns it
+	if inst.OIDCID == "" || inst.IsOrganizationInstance() {
 		return nil
 	}
 	email, _ := inst.SettingsEMail()

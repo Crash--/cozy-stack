@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cozy/cozy-stack/model/instance"
 	"github.com/cozy/cozy-stack/model/vfs"
 	"github.com/cozy/cozy-stack/pkg/consts"
 	"github.com/cozy/cozy-stack/pkg/metadata"
@@ -91,6 +92,12 @@ func TestFileChanged(t *testing.T) {
 	fileChanged(db, moved, file)
 	require.Len(t, got, 1)
 	assert.Equal(t, &File{ID: "f1", Instance: "alice.example", DirID: "d2", DriveID: "drive-1"}, got[0].file.From)
+}
+
+func TestNobodyActsOnAnOrganizationInstance(t *testing.T) {
+	org := &instance.Instance{Domain: "acme.example.net", OrgID: "acme", OIDCID: "acme"}
+	assert.Nil(t, actorOfInstance(org))
+	assert.Nil(t, actorOfInstance(&instance.Instance{Domain: "bob.example.net", OrgID: "acme"}))
 }
 
 func TestWrittenBy(t *testing.T) {
