@@ -179,22 +179,27 @@ func (r *queueRunner) run(ctx context.Context) error {
 				log.Debugf("Processing message #%d for queue %s with handler", messageCount, r.queue.cfg.Name)
 				handleErr = r.queue.Handler.Handle(ctx, d)
 			}()
-			if errors.Is(handleErr, ErrMalformed) {
-				log.Errorf("Message #%d rejected for queue %s: %v, dead-lettering it", messageCount, r.queue.cfg.Name, handleErr)
-				_ = d.Nack(false, false)
-				continue
-			}
-			if handleErr != nil {
-				log.Errorf("Message #%d processing failed for queue %s: %v, nacking message", messageCount, r.queue.cfg.Name, handleErr)
-				_ = d.Nack(false, true)
-				continue
-			}
-			log.Debugf("Message #%d processed successfully for queue %s, acknowledging", messageCount, r.queue.cfg.Name)
-			if ackErr := d.Ack(false); ackErr != nil {
-				log.Errorf("Failed to ack message #%d [exchange=%s queue=%s]: %v", messageCount, r.exchangeName, r.queue.cfg.Name, ackErr)
-			} else {
-				log.Debugf("Message #%d acknowledged successfully for queue %s", messageCount, r.queue.cfg.Name)
-			}
+			r.settle(d, messageCount, handleErr)
+		}
+	}
+}
+
+// settle acknowledges a handled message, dead-letters a malformed one, and
+// sends any other failure back to the queue with basic.reject: since RabbitMQ
+// 4.3, a quorum queue counts a reject towards its delivery limit, but not a
+// nack, so a message that fails for good would be redelivered forever.
+func (r *queueRunner) settle(d amqp.Delivery, messageCount int, handleErr error) {
+	switch {
+	case errors.Is(handleErr, ErrMalformed):
+		log.Errorf("Message #%d rejected for queue %s: %v, dead-lettering it", messageCount, r.queue.cfg.Name, handleErr)
+		_ = d.Nack(false, false)
+	case handleErr != nil:
+		log.Errorf("Message #%d processing failed for queue %s: %v, rejecting it back to the queue", messageCount, r.queue.cfg.Name, handleErr)
+		_ = d.Reject(true)
+	default:
+		log.Debugf("Message #%d processed successfully for queue %s, acknowledging", messageCount, r.queue.cfg.Name)
+		if ackErr := d.Ack(false); ackErr != nil {
+			log.Errorf("Failed to ack message #%d [exchange=%s queue=%s]: %v", messageCount, r.exchangeName, r.queue.cfg.Name, ackErr)
 		}
 	}
 }
