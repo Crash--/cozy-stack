@@ -17,6 +17,9 @@ import (
 // exchange.
 const RoutingKeyBatch = "drive.pointer.batch"
 
+// RoutingKeyDescribe asks the owner of a shared drive to publish its state.
+const RoutingKeyDescribe = "drive.sharing.describe"
+
 // Queue is the queue of the commands on the drive exchange.
 const Queue = "stack.drive.pointers"
 
@@ -29,7 +32,15 @@ const (
 	OpRemove  = "remove"
 	OpTrash   = "trash"
 	OpRestore = "restore"
+	OpSync    = "sync"
 )
+
+// ScopePersonal is the scope of a sync: the pointers of the app on the
+// instance, outside the shared drives it owns.
+const ScopePersonal = "personal"
+
+// MaxWanted is the largest wanted state of a sync.
+const MaxWanted = 10000
 
 // Batch is the payload of drive.pointer.batch: commands on the pointers of
 // any instances, applied one by one.
@@ -62,9 +73,25 @@ type Item struct {
 	Fallback *Fallback `json:"fallback,omitempty"`
 	// OnlyIfExists makes an ensure update the pointer without creating it.
 	OnlyIfExists bool `json:"onlyIfExists,omitempty"`
+	// Trashed, on an ensure, puts the existing pointer in the trash or takes it
+	// out; nil leaves it where it is.
+	Trashed *bool `json:"trashed,omitempty"`
 	// AsOf is when the service read the state this command brings: an older
 	// command than the last one applied to the pointer changes nothing.
 	AsOf time.Time `json:"asOf"`
+	// Scope and Wanted are the state a sync brings: every pointer of the scope
+	// not in Wanted goes.
+	Scope  string   `json:"scope,omitempty"`
+	Wanted []Wanted `json:"wanted,omitempty"`
+}
+
+// Wanted is a pointer a sync keeps or creates.
+type Wanted struct {
+	ExternalID   string `json:"externalId"`
+	Name         string `json:"name"`
+	Role         string `json:"role,omitempty"`
+	OnlyIfExists bool   `json:"onlyIfExists,omitempty"`
+	Trashed      *bool  `json:"trashed,omitempty"`
 }
 
 // Fallback is where a pointer goes when its drive refuses the member.
@@ -105,12 +132,27 @@ func (it *Item) check(b *Batch) error {
 	switch {
 	case it.Instance == "":
 		return fmt.Errorf("missing instance")
-	case it.ExternalID == "":
+	case it.ExternalID == "" && it.Op != OpSync:
 		return fmt.Errorf("missing externalId")
 	case it.AsOf.IsZero():
 		return fmt.Errorf("missing asOf")
 	}
 	switch it.Op {
+	case OpSync:
+		if it.Scope != ScopePersonal {
+			return fmt.Errorf("unknown scope %q", it.Scope)
+		}
+		if len(it.Wanted) > MaxWanted {
+			return fmt.Errorf("%d wanted, at most %d", len(it.Wanted), MaxWanted)
+		}
+		for _, w := range it.Wanted {
+			if strings.TrimSpace(w.ExternalID) == "" || w.Name == "" || strings.ContainsAny(w.Name, "/\x00") {
+				return fmt.Errorf("invalid wanted %q %q", w.ExternalID, w.Name)
+			}
+		}
+		if b.Folder == "" {
+			return fmt.Errorf("missing folder")
+		}
 	case OpEnsure:
 		if it.Name == "" || strings.ContainsAny(it.Name, "/\x00") {
 			return fmt.Errorf("invalid name %q", it.Name)

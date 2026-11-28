@@ -1,6 +1,8 @@
 package sharing
 
 import (
+	"time"
+
 	"github.com/cozy/cozy-stack/model/driveevents"
 	"github.com/cozy/cozy-stack/model/instance"
 )
@@ -41,6 +43,28 @@ func (s *Sharing) emitMember(inst *instance.Instance, eventType string, m *Membe
 
 // emitEvent is replaced by the tests.
 var emitEvent = driveevents.Emit
+
+// EmitDriveState publishes a sharing.drive.state event: the drive and all its
+// recipients as the owner holds them now, for a consumer that asked for it.
+func (s *Sharing) EmitDriveState(inst *instance.Instance) {
+	data := &driveevents.DriveState{
+		SharingID: s.SID,
+		Instance:  inst.Domain,
+		Name:      s.Description,
+		FileIDs:   []string{},
+		Members:   []driveevents.DriveMember{},
+		At:        time.Now().UTC(),
+	}
+	if rule := s.FirstFilesRule(); rule != nil {
+		data.FileIDs = rule.Values
+	}
+	for i, m := range s.Members {
+		if i > 0 {
+			data.Members = append(data.Members, driveevents.DriveMember{Member: m.Instance, Email: m.Email, ReadOnly: m.ReadOnly, Status: m.Status})
+		}
+	}
+	emitEvent(inst, driveevents.DriveStateEvent, data)
+}
 
 // EmitMembers publishes a sharing.member.updated event for every recipient of
 // the sharing, as the owner knows them: the initial state of a consumer that

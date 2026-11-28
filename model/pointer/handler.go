@@ -71,7 +71,11 @@ func NewHandler(_ messaging.Publisher) *Handler {
 // logged and counted as handled; any other failure asks for the redelivery of
 // the whole batch, whose items already applied then change nothing.
 func (h *Handler) Handle(_ context.Context, d amqp.Delivery) error {
-	if d.RoutingKey != RoutingKeyBatch {
+	switch d.RoutingKey {
+	case RoutingKeyBatch:
+	case RoutingKeyDescribe:
+		return describe(d.Body)
+	default:
 		return malformed("unknown routing key %s", d.RoutingKey)
 	}
 	b, err := ParseBatch(d.Body)
@@ -132,6 +136,9 @@ func apply(b *Batch, it *Item) (Outcome, error) {
 		}
 		return "", err
 	}
+	if it.Op == OpSync {
+		return applySync(inst, b, it)
+	}
 	if it.Op == OpEnsure && it.DirID != "" {
 		// The folder may be gone (deleted meanwhile, or lost): the pointer goes
 		// to its fallback, or stays out of it
@@ -182,6 +189,11 @@ func apply(b *Batch, it *Item) (Outcome, error) {
 		if file == nil && it.OnlyIfExists {
 			return Gone, nil
 		}
+		if file != nil && it.Trashed != nil && *it.Trashed != file.Trashed {
+			if file, err = trashOrRestore(inst, b, it, file, *it.Trashed); err != nil {
+				return "", err
+			}
+		}
 		_, err = Ensure(inst, b, it, file)
 		return Done, err
 	case OpRemove:
@@ -196,15 +208,18 @@ func apply(b *Batch, it *Item) (Outcome, error) {
 		if (it.Op == OpTrash) == file.Trashed {
 			return Done, nil
 		}
-		markWrite(inst, file, b.App, it.AsOf)
-		if it.Op == OpTrash {
-			_, err = vfs.TrashFile(inst.VFS(), file)
-		} else {
-			_, err = vfs.RestoreFile(inst.VFS(), file)
-		}
+		_, err = trashOrRestore(inst, b, it, file, it.Op == OpTrash)
 		return Done, err
 	}
 	return "", fmt.Errorf("%w: unknown op %q", errDefinitive, it.Op)
+}
+
+func trashOrRestore(inst *instance.Instance, b *Batch, it *Item, file *vfs.FileDoc, trash bool) (*vfs.FileDoc, error) {
+	markWrite(inst, file, b.App, it.AsOf)
+	if trash {
+		return vfs.TrashFile(inst.VFS(), file)
+	}
+	return vfs.RestoreFile(inst.VFS(), file)
 }
 
 // applyFallback applies an ensure to its fallback instance and folder.

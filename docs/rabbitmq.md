@@ -306,12 +306,19 @@ CloudEvents read by other apps, with the event type as routing key and
     that names no app;
   - `actor`: the owner of the instance (`sub`, their OIDC id, and `email`);
     absent on an organization instance;
-  - `drive_id`: the shared drive of the instance holding the file;
+  - `drive_id` and `drive_name`: the shared drive of the instance holding the
+    file;
+  - `trashed`, and `updated_at`: the time of the write, so that a consumer
+    keeps the latest of two gestures delivered out of order;
   - `from`: for a copy or a move, the source file (`id`, `instance`,
     `dir_id`, and for a move the `drive_id` it left).
 - `com.twake.drive.sharing.member.added|updated|removed.v1`: a member of a
   sharing changed, published by the instance of the owner, with the member's
   instance and `email`.
+- `com.twake.drive.sharing.drive.state.v1`: the reply to
+  `drive.sharing.describe`, a shared drive as its owner holds it at `at`:
+  `sharing_id`, `instance` (the owner), `name`, `file_ids` (its root), and
+  every recipient in `members` (`member`, `email`, `read_only`, `status`).
 
 ### Handlers
 
@@ -632,9 +639,29 @@ on any instances, by batches of at most 200 items:
 - `asOf` is when the service read what the command brings. The Stack keeps
   the `asOf` of the last command applied in `metadata.externalAsOf`, and
   ignores an older command. The writes of a person leave it as it is.
+- `ensure` with `trashed` also puts the existing pointer in the trash, or
+  takes it out.
+- `sync` brings the pointers of a `scope` of an instance to a `wanted` state,
+  without the service reading them. The only scope is `personal`: the pointers
+  of `mime` on the instance, outside the shared drives it owns. Each wanted
+  pointer (`externalId`, `name`, `role`, `onlyIfExists`, `trashed`) is ensured,
+  every other pointer of the scope is removed, and so is a second file for the
+  same document, all under the `asOf` of the sync. A pointer already at its
+  name (but for a ` (2)` suffix), role and trash state is not written.
+
+  ```json
+  { "op": "sync", "instance": "bob.example.net", "scope": "personal", "asOf": "2026-11-28T10:00:00.000Z",
+    "wanted": [{ "externalId": "0b85f827", "name": "Plan.docs-note", "role": "reader" }] }
+  ```
+
 - An item that can never be applied (unknown instance, missing field) is
   logged and dropped. Any other failure sends the whole batch back to the
   queue; the items already applied then change nothing. There is no reply.
+
+The same queue takes `drive.sharing.describe`,
+`{ "instance": "acme.example.net", "sharing_id": "…" }`: the owner of the
+shared drive publishes its `sharing.drive.state` (above). A drive the instance
+does not own, or no longer has, publishes nothing.
 
 ### Lifecycle
 

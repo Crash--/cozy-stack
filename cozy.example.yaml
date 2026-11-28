@@ -891,6 +891,7 @@ rabbitmq:
           delivery_limit: 5
           bindings:
             - drive.pointer.batch
+            - drive.sharing.describe
     - name: rag.index.topic
       kind: topic
       durable: true

@@ -39,3 +39,30 @@ func TestMemberEventsFromTheOwnerOnly(t *testing.T) {
 		driveevents.MemberUpdated + " acme.example https://bob.example ready",
 	}, got)
 }
+
+func TestDriveStateNamesEveryRecipient(t *testing.T) {
+	var state *driveevents.DriveState
+	var eventType string
+	emitEvent = func(_ prefixer.Prefixer, typ string, data any) {
+		eventType, state = typ, data.(*driveevents.DriveState)
+	}
+	t.Cleanup(func() { emitEvent = driveevents.Emit })
+
+	s := &Sharing{SID: "s1", Owner: true, Drive: true, Description: "Team", Members: []Member{
+		{Status: MemberStatusOwner, Instance: "https://acme.example"},
+		{Status: MemberStatusReady, Instance: "https://bob.example", Email: "bob@example.net"},
+		{Status: MemberStatusMailNotSent, Instance: "https://carol.example", Email: "carol@example.net", ReadOnly: true},
+	}, Rules: []Rule{{DocType: "io.cozy.files", Values: []string{"root-1"}}}}
+	s.EmitDriveState(&instance.Instance{Domain: "acme.example"})
+
+	assert.Equal(t, driveevents.DriveStateEvent, eventType)
+	assert.Equal(t, "s1", state.SharingID)
+	assert.Equal(t, "acme.example", state.Instance)
+	assert.Equal(t, "Team", state.Name)
+	assert.Equal(t, []string{"root-1"}, state.FileIDs)
+	assert.False(t, state.At.IsZero())
+	assert.Equal(t, []driveevents.DriveMember{
+		{Member: "https://bob.example", Email: "bob@example.net", Status: MemberStatusReady},
+		{Member: "https://carol.example", Email: "carol@example.net", ReadOnly: true, Status: MemberStatusMailNotSent},
+	}, state.Members)
+}
